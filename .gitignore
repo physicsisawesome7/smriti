@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# runtime data: database, blobs, audit logs, keys
+data/
+*.db
+*.sqlite
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
