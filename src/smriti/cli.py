@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,21 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8000)
     sp.add_argument("--seed", action="store_true", help="seed an empty tenant on start")
+    sp.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("SMRITI_WORKERS", "1")),
+        help="API processes (needs the qdrant backend when >1)",
+    )
     sub.add_parser("seed")
+    sub.add_parser("worker", help="run source schedules and background jobs (one per deployment)")
+    bp = sub.add_parser("bench", help="load-test a running server and report latency, throughput and GPU tokens")
+    bp.add_argument("--url", default="http://127.0.0.1:8000")
+    bp.add_argument("--concurrency", type=int, default=8)
+    bp.add_argument("--requests", type=int, default=100)
+    bp.add_argument(
+        "--no-cache", action="store_true", help="make every question unique so the answer cache cannot help"
+    )
     ip = sub.add_parser("ingest")
     ip.add_argument("files", nargs="+")
     ip.add_argument("--as", dest="user", default="km")
@@ -89,8 +104,6 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     _utf8_console()
     if args.data_dir:
-        import os
-
         os.environ["SMRITI_DATA_DIR"] = args.data_dir
 
     if args.cmd == "validate-pack":
@@ -117,13 +130,38 @@ def main(argv: list[str] | None = None) -> int:
 
         from .api import create_app
 
-        app = create_app()
-        plat = app.state.platform
-        if args.seed and not plat.store.list_documents(plat.default):
-            print("Seeding demo tenant…")
-            seed(plat)
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        s = Settings.from_env()
+        workers = args.workers
+        if workers > 1 and s.vector_backend != "qdrant":
+            print("--workers > 1 needs SMRITI_VECTOR_BACKEND=qdrant (each process would hold its own index); using 1")
+            workers = 1
+        if args.seed:
+            plat = _platform(args)
+            if not plat.store.list_documents(plat.default):
+                print("Seeding demo tenant…")
+                seed(plat)
+            del plat
+        if workers > 1:
+            uvicorn.run(
+                "smriti.api:create_app", factory=True, host=args.host, port=args.port, workers=workers, log_level="info"
+            )
+        else:
+            uvicorn.run(create_app(), host=args.host, port=args.port, log_level="info")
         return 0
+
+    if args.cmd == "worker":
+        from .watch import Scheduler
+
+        plat = _platform(args)
+        print(f"worker: watching {sum(len(t.pack.sources) for t in plat.tenants.values())} sources", flush=True)
+        sched = Scheduler(plat.tenants)
+        sched.run()  # blocks
+        return 0
+
+    if args.cmd == "bench":
+        from .bench import run_bench
+
+        return run_bench(args.url, args.concurrency, args.requests, unique=args.no_cache)
 
     if args.cmd == "mcp":
         from .mcp_server import serve_stdio

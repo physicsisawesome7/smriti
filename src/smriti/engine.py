@@ -76,11 +76,18 @@ class Tenant:
             else LexicalReranker(self._idf)
         )
         self.index: VectorIndex = (
-            QdrantIndex(settings.qdrant_url or "http://localhost:6333", f"smriti_{self.id}", self.embedder.dim)
+            QdrantIndex(
+                settings.qdrant_url or "http://localhost:6333",
+                # one collection per embedding model: a model upgrade re-indexes side by side (blue-green)
+                f"smriti_{self.id}_{re.sub(r'[^a-z0-9]+', '_', self.embedder.name.lower()).strip('_')}",
+                self.embedder.dim,
+            )
             if settings.vector_backend == "qdrant"
             else LocalIndex(self.embedder.dim)
         )
-        self.generation = 0  # bumped on every ingest; invalidates the answer cache
+        self._gen: tuple[float, int] = (0.0, -1)
+        self._visible: dict[str, tuple[int, frozenset[str]]] = {}
+        self._qvecs: dict[str, np.ndarray] = {}
         self._ingest_lock = threading.Lock()
         self._rebuild()
 
@@ -128,7 +135,10 @@ class Tenant:
         return out
 
     def _rebuild(self) -> None:
-        if not isinstance(self.index, LocalIndex):
+        """Fill the index from the store: always for the in-process index, and for
+        Qdrant when this embedding model's collection is empty (a model change
+        builds the new collection side by side; the old one stays until removed)."""
+        if not isinstance(self.index, LocalIndex) and len(self.index) > 0:
             return
         rows = self.store.all_chunks(self.id)
         if not rows:
@@ -136,13 +146,56 @@ class Tenant:
         docs = {d["doc_id"]: d for d in self.store.list_documents(self.id)}
         rows = [r for r in rows if r["doc_id"] in docs and docs[r["doc_id"]]["status"] != "tombstoned"]
         texts = [self._index_text(r) for r in rows]
-        vecs = self._embed(texts)
-        self.index.upsert(
-            [(r["chunk_id"], vecs[i], texts[i], self._payload(r, docs[r["doc_id"]])) for i, r in enumerate(rows)]
-        )
+        if not isinstance(self.index, LocalIndex):
+            print(f"{self.id}: indexing {len(rows)} chunks with {self.embedder.name}", flush=True)
+        for i in range(0, len(rows), 256):
+            part, ptexts = rows[i : i + 256], texts[i : i + 256]
+            vecs = self._embed(ptexts)
+            self.index.upsert(
+                [(r["chunk_id"], vecs[j], ptexts[j], self._payload(r, docs[r["doc_id"]])) for j, r in enumerate(part)]
+            )
 
     def principal(self, user_id: str) -> Principal:
         return self.directory.principal(user_id)
+
+    @property
+    def generation(self) -> int:
+        """Index generation, shared through the database so every API worker and
+        the ingest worker agree on when cached answers went stale. Read at most
+        once a second."""
+        now = time.monotonic()
+        if now - self._gen[0] > 1.0:
+            self._gen = (now, self.store.get_counter(self.id, "generation"))
+        return self._gen[1]
+
+    def bump_generation(self) -> None:
+        self.store.incr_counter(self.id, "generation")
+        self._gen = (0.0, -1)
+
+    def visible_docs(self, p: Principal) -> frozenset[str]:
+        """Documents this person may read, computed once per access profile and
+        index generation, so search filtering is a set lookup, not a rule
+        evaluation per chunk. The bulk check after search still re-evaluates."""
+        gen = self.generation
+        hit = self._visible.get(p.access_key)
+        if hit and hit[0] == gen:
+            return hit[1]
+        docs = self.store.list_documents(self.id)
+        allowed = frozenset(self.authz.bulk_check(p, {d["doc_id"]: d for d in docs}))
+        if len(self._visible) > 512:
+            self._visible.clear()
+        self._visible[p.access_key] = (gen, allowed)
+        return allowed
+
+    def query_vector(self, query: str) -> np.ndarray:
+        expanded, _, _ = self.expand_query(query)
+        v = self._qvecs.get(expanded)
+        if v is None:
+            v = self._embed_query(expanded)
+            if len(self._qvecs) > 4096:
+                self._qvecs.clear()
+            self._qvecs[expanded] = v
+        return v
 
     # ------------------------------------------------------------------ ingestion
 
@@ -316,7 +369,7 @@ class Tenant:
                 )
 
             impact = self._apply_relations(doc_id, meta, actor)
-            self.generation += 1
+            self.bump_generation()
 
         self.audit.record(
             actor,
@@ -454,7 +507,7 @@ class Tenant:
                 },
             },
         )
-        self.generation += 1
+        self.bump_generation()
         self.audit.record(actor, "tombstone", doc_id=doc_id, reason=reason)
 
     # ------------------------------------------------------------------ retrieval
@@ -496,6 +549,7 @@ class Tenant:
         include_superseded: bool = False,
         top_k: int | None = None,
         doc_ids: list[str] | None = None,
+        qvec: np.ndarray | None = None,
     ) -> tuple[list[Passage], dict[str, Any]]:
         t0 = time.perf_counter()
         rc = self.pack.config.retrieval
@@ -503,9 +557,13 @@ class Tenant:
         expanded, extra, focus_text = self.expand_query(query)
         qtokens = tokenize(expanded)
         focus = tokenize(focus_text)
-        qvec = self._embed_query(expanded)
+        if qvec is None:
+            qvec = self.query_vector(query)
         flt = AccessFilter(p)
-        allow = flt.matches if not doc_ids else (lambda pl: flt.matches(pl) and pl["doc_id"] in doc_ids)
+        # first enforcement point: the set of readable documents, applied inside the search
+        allow: frozenset[str] = self.visible_docs(p)
+        if doc_ids:
+            allow = allow & frozenset(doc_ids)
         current_only = as_of is None and not include_superseded
         t1 = time.perf_counter()
         hits = self.index.search(

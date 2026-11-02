@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -71,7 +72,6 @@ class Platform:
             pack = load_pack(path)
             self.tenants[pack.id] = Tenant(pack, self.store, self.blobs, settings)
         self.default = settings.default_tenant or next(iter(self.tenants))
-        self.demo_published: set[str] = set()
         self.scheduler: watch.Scheduler | None = None
 
     def tenant(self, tid: str | None) -> Tenant:
@@ -136,8 +136,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------ meta
 
     @app.get("/api/health")
-    def health() -> dict[str, Any]:
-        return {"ok": True, "version": __version__, "tenants": list(plat.tenants)}
+    def health(deep: bool = False) -> Any:
+        """Liveness; with ?deep=1, readiness of the database and every model server."""
+        out: dict[str, Any] = {"ok": True, "version": __version__, "tenants": list(plat.tenants)}
+        if deep:
+            checks: dict[str, str] = {}
+            try:
+                plat.store.count(traces)
+                checks["database"] = "ok"
+            except Exception as e:
+                checks["database"] = f"error: {e}"
+            for t in plat.tenants.values():
+                for task in ("chat", "embed", "rerank"):
+                    r = getattr(t.pack.config.models, task, None)
+                    if not r or not r.base_url:
+                        continue
+                    base = r.base_url.rstrip("/").removesuffix("/v1")
+                    try:
+                        checks[f"{t.id}:{task}"] = (
+                            "ok" if httpx.get(f"{base}/health", timeout=3).status_code < 400 else "down"
+                        )
+                    except httpx.HTTPError as e:
+                        checks[f"{t.id}:{task}"] = f"down: {type(e).__name__}"
+            out["checks"] = checks
+            out["ok"] = all(v == "ok" for v in checks.values())
+            if not out["ok"]:
+                return JSONResponse(out, status_code=503)
+        return out
+
+    def _metrics() -> dict[str, Any]:
+        from .ask import _cache
+
+        m: dict[str, Any] = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "llm_errors": 0, "shed": 0}
+        for t in plat.tenants.values():
+            u = t.gw.usage
+            m["llm_calls"] += u.calls
+            m["prompt_tokens"] += u.prompt_tokens
+            m["completion_tokens"] += u.completion_tokens
+            m["llm_errors"] += u.errors
+            m["shed"] += u.shed
+        m["cache_hits"], m["cache_misses"] = _cache.hits, _cache.misses
+        m["chunks_indexed"] = sum(len(t.index) for t in plat.tenants.values())
+        return m
+
+    @app.get("/api/metrics.json")
+    def metrics_json() -> dict[str, Any]:
+        return _metrics()
+
+    @app.get("/api/metrics", response_class=Response)
+    def metrics() -> Response:
+        """Prometheus exposition. Per-process counters; sum across API workers."""
+        lines = []
+        for k, v in _metrics().items():
+            kind = "gauge" if k == "chunks_indexed" else "counter"
+            lines += [f"# TYPE smriti_{k} {kind}", f"smriti_{k} {v}"]
+        return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     @app.get("/api/whoami")
     def whoami(c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
@@ -667,7 +720,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = []
         sid = uuid.uuid4().hex[:24]
         for it in items:
-            if not it.get("published", True) and it["file"] not in plat.demo_published:
+            if not it.get("published", True) and not t.store.get_counter(t.id, "demo:" + it["file"]):
                 continue
             rows.append(
                 f'<tr><td>{it["ref"]}</td><td>{it["title"]}</td><td>{it["date"]}</td><td><a href="/demo-site/files/{it["file"]}?sid={sid}">Download</a></td></tr>'
@@ -698,10 +751,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         need(p, "curate", "administer")
         root = t.pack.resolve("demo-site")
         items = yaml.safe_load((root / "listing.yaml").read_text(encoding="utf-8"))["items"] if root else []
-        pending = [i for i in items if not i.get("published", True) and i["file"] not in plat.demo_published]
+        pending = [
+            i for i in items if not i.get("published", True) and not t.store.get_counter(t.id, "demo:" + i["file"])
+        ]
         if not pending:
             return {"published": None, "message": "nothing left to publish"}
-        plat.demo_published.add(pending[0]["file"])
+        t.store.incr_counter(t.id, "demo:" + pending[0]["file"])
         return {"published": pending[0]}
 
     # ------------------------------------------------------------ web app

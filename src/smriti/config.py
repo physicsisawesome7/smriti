@@ -10,7 +10,9 @@ pack fails fast with a readable error instead of misbehaving at query time.
 from __future__ import annotations
 
 import copy
+import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -87,8 +89,16 @@ class ModelRoute(_Strict):
     model: str | None = None
     api_key_env: str | None = None
     timeout_s: float = 60.0
-    max_tokens: int = 900
+    max_tokens: int = 512
     temperature: float = 0.1
+    # merged into every request body, e.g. {"chat_template_kwargs": {"enable_thinking": false}} for Qwen3
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+    # requests in flight per process; beyond this, callers wait up to queue_timeout_s, then degrade gracefully
+    max_concurrency: int = 8
+    queue_timeout_s: float = 20.0
+    batch_size: int = 32  # embedding batch per request
+    query_instruction: str | None = None  # embedder query prefix ("query: " for e5); None = model default
+    document_instruction: str = ""  # embedder passage prefix ("passage: " for e5)
 
 
 class ModelsConfig(_Strict):
@@ -113,6 +123,19 @@ class RetrievalConfig(_Strict):
     boilerplate: list[str] = Field(default_factory=list)  # regexes for stock lines never worth quoting
 
 
+class GenerationConfig(_Strict):
+    """GPU budget knobs. Every token not sent is latency and memory saved."""
+
+    # prompt budget for retrieved evidence; passages are compressed to relevant sentences to fit
+    context_tokens: int = 1800
+    # routes answered without the LLM when the verified extractive answer is complete
+    extractive_first_routes: list[str] = Field(default_factory=lambda: ["lookup", "table"])
+    extractive_min_faithfulness: float = 1.0
+    # near-duplicate questions from people with identical rights reuse the verified answer
+    semantic_cache_threshold: float = 0.94
+    cache_ttl_s: int = 900
+
+
 class TenantConfig(_Strict):
     id: str
     name: str
@@ -121,6 +144,7 @@ class TenantConfig(_Strict):
     extends: list[str] = Field(default_factory=list)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    generation: GenerationConfig = Field(default_factory=GenerationConfig)
     retention: dict[str, Any] = Field(default_factory=dict)
     policy: str = ""  # tenant policy prompt layer
     seed: list[dict[str, Any]] = Field(default_factory=list)  # documents loaded by `smriti seed`
@@ -245,9 +269,18 @@ def deep_merge(base: Any, over: Any) -> Any:
     return copy.deepcopy(over)
 
 
+_ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)(?::-([^}]*))?\}")
+
+
+def expand_env(text: str) -> str:
+    """``${VAR}`` and ``${VAR:-default}`` in pack files, so one pack works on a
+    laptop and inside a container network without edits."""
+    return _ENV_REF.sub(lambda m: os.environ.get(m.group(1)) or (m.group(2) or ""), text)
+
+
 def _yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(expand_env(path.read_text(encoding="utf-8"))) or {}
     except yaml.YAMLError as e:
         raise PackError(f"{path}: invalid YAML: {e}") from e
 
@@ -275,6 +308,48 @@ def _layers(tenant_dir: Path, seen: set[Path] | None = None) -> list[Path]:
         roots.extend(_layers((tenant_dir / base), seen))
     roots.append(tenant_dir)
     return roots
+
+
+ENV_ROUTES = ("chat", "router", "extract", "judge", "guard", "embed", "rerank")
+
+
+def apply_env_overrides(tenant: dict[str, Any]) -> dict[str, Any]:
+    """Environment overrides: the last configuration layer, used by the Docker
+    deployment so one `.env` points every tenant at the local model servers.
+
+    SMRITI_<ROUTE>_URL, _MODEL, _MAX_TOKENS, _CONCURRENCY, _TIMEOUT, _EXTRA (JSON),
+    _QUERY_PREFIX and _DOC_PREFIX (embedders)
+    for ROUTE in CHAT, ROUTER, EXTRACT, JUDGE, GUARD, EMBED, RERANK, plus
+    SMRITI_CONTEXT_TOKENS. An empty URL removes the route (built-in fallback).
+    """
+    out = copy.deepcopy(tenant)
+    models = out.setdefault("models", {})
+    for route in ENV_ROUTES:
+        p = f"SMRITI_{route.upper()}_"
+        if f"{p}URL" not in os.environ and f"{p}MODEL" not in os.environ:
+            continue
+        r = dict(models.get(route) or {})
+        if f"{p}URL" in os.environ:
+            r["base_url"] = os.environ[f"{p}URL"] or None
+        if os.environ.get(f"{p}MODEL"):
+            r["model"] = os.environ[f"{p}MODEL"]
+        for env, key, cast in (
+            ("MAX_TOKENS", "max_tokens", int),
+            ("CONCURRENCY", "max_concurrency", int),
+            ("TIMEOUT", "timeout_s", float),
+        ):
+            if os.environ.get(p + env):
+                r[key] = cast(os.environ[p + env])
+        if f"{p}QUERY_PREFIX" in os.environ:
+            r["query_instruction"] = os.environ[f"{p}QUERY_PREFIX"]
+        if f"{p}DOC_PREFIX" in os.environ:
+            r["document_instruction"] = os.environ[f"{p}DOC_PREFIX"]
+        if os.environ.get(f"{p}EXTRA"):
+            r["extra_body"] = json.loads(os.environ[f"{p}EXTRA"])
+        models[route] = r if r.get("base_url") else ({} if route == "chat" else None)
+    if os.environ.get("SMRITI_CONTEXT_TOKENS"):
+        out.setdefault("generation", {})["context_tokens"] = int(os.environ["SMRITI_CONTEXT_TOKENS"])
+    return out
 
 
 def load_pack(tenant_dir: Path) -> TenantPack:
@@ -329,6 +404,7 @@ def load_pack(tenant_dir: Path) -> TenantPack:
                 name = meta.get("name", d.name)
                 skills[name] = Skill(name=name, description=meta.get("description", ""), path=d, meta=meta, body=body)
 
+    merged_tenant = apply_env_overrides(merged_tenant)
     try:
         tcfg = TenantConfig(**merged_tenant)
         rcfg = RolesConfig(**merged_roles)

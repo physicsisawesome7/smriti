@@ -4,9 +4,22 @@
 
 It is an implementation of the *Institutional Memory Platform: Development Plan* (29 Oct 2026). The MVP modules are Connect, Parse, Remember, Ask and Govern. It also ships parts of Watch, Act, Operate and Configure, plus the Indian Railways vertical pack.
 
+**One-click, on one consumer GPU** (Docker; picks a profile for 6, 12, 16 or 24 GB cards, or CPU only):
+
 ```bash
 git clone https://github.com/physicsisawesome7/smriti && cd smriti
-pip install -e ".[dev]"                   # Python 3.11+; installs Saaf from github.com/physicsisawesome7/Saaf
+./install.sh                                   # Linux / WSL2 / macOS
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
+```
+
+This runs vLLM (Qwen3 AWQ), TEI (Qwen3-Embedding, bge-reranker-v2-m3), PostgreSQL, Qdrant, the API and a crawler worker. See [deploy/README.md](deploy/README.md) for profiles, VRAM budgets, tuning and troubleshooting.
+
+**Without Docker** (development, or no GPU): Python 3.11+.
+
+```bash
+pip install -e ".[dev]"                   # installs Saaf from github.com/physicsisawesome7/Saaf
 smriti --data-dir data serve --seed       # http://127.0.0.1:8000, demo tenant seeded on first start
 pytest -q                                 # unit tests plus the release gates
 ```
@@ -104,11 +117,14 @@ evals/             golden.yaml, redteam.yaml
 
 ## Deploy
 
-`docker compose -f deploy/docker-compose.yml up --build` runs Smriti with PostgreSQL and Qdrant. A commented `vllm` service shows the GPU profile. The same image fits the single-server appliance, Kubernetes (Helm values follow the compose services) and air-gapped installs, since nothing calls out unless a model route says so.
+`./install.sh` (or `install.ps1`) detects the GPU, writes `.env` from `deploy/profiles/<profile>.env`, starts [compose.yaml](compose.yaml) and waits until the model servers are ready. Everything is configured in `.env`: models, VRAM split, batch sizes, ports, auth and which tenant pack to load. Packs are mounted from `./packs`, so you change documents, roles and sources without rebuilding. `smriti bench` measures latency, throughput and GPU tokens per answer on your hardware. Details: [deploy/README.md](deploy/README.md).
+
+The GPU budget comes mostly from not calling the model. Lookups and table questions are answered by verified quotes or code. A guarded cache reuses answers for identical access profiles. Prompts are capped and open with a static prefix that vLLM caches. Qwen3's reasoning tokens are off. Admission control serves the verified extractive answer instead of queueing when the GPU is saturated.
 
 ## Honest limits of this build
 
 - OCR for scanned pages, Docling layout parsing and speech-to-text are plug-in points (`parsers.EXTERNAL_PARSERS`), not bundled. Scanned pages are flagged low-confidence and queued.
+- The 12 GB and 16 GB profiles are sized from documented model and KV-cache arithmetic and have not been run on those cards yet; run `smriti bench` after install and adjust `.env`.
 - Keycloak, OpenFGA and Temporal integrations are interfaces with local implementations. The adapters still need to be written against a live deployment.
 - The offline extractive writer is faithful but terse. Fluent drafting needs a configured model, which is then held to the same verification.
 - Licences of any model you configure must be checked before shipping (see `models.licence_register`).

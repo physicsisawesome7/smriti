@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -235,6 +236,14 @@ traces = Table(
     Column("data", Text, nullable=False),
 )
 
+counters = Table(
+    "counters",
+    md,
+    Column("tenant", String(64), primary_key=True),
+    Column("name", String(64), primary_key=True),
+    Column("value", Integer, nullable=False, default=0),
+)
+
 drafts = Table(
     "drafts",
     md,
@@ -263,10 +272,42 @@ class Store:
     def __init__(self, url: str):
         kw: dict[str, Any] = {"future": True}
         if url.startswith("sqlite"):
-            kw["connect_args"] = {"check_same_thread": False}
+            kw["connect_args"] = {"check_same_thread": False, "timeout": 30}
             Path(url.split("///", 1)[-1]).parent.mkdir(parents=True, exist_ok=True)
+        else:  # PostgreSQL: a pool per process sized for the thread pool, recycled connections
+            kw.update(
+                pool_size=int(os.environ.get("SMRITI_DB_POOL", "10")),
+                max_overflow=10,
+                pool_pre_ping=True,
+                pool_recycle=1800,
+            )
         self.engine: Engine = create_engine(url, **kw)
+        if url.startswith("sqlite"):
+            from sqlalchemy import event
+
+            @event.listens_for(self.engine, "connect")
+            def _wal(conn: Any, _: Any) -> None:  # concurrent readers while one process writes
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+
         md.create_all(self.engine)
+
+    # ---------- counters (shared across processes)
+
+    def get_counter(self, tenant: str, name: str) -> int:
+        with self.engine.connect() as c:
+            r = c.execute(select(counters.c.value).where(counters.c.tenant == tenant, counters.c.name == name)).first()
+        return int(r.value) if r else 0
+
+    def incr_counter(self, tenant: str, name: str) -> None:
+        with self.engine.begin() as c:
+            res = c.execute(
+                update(counters)
+                .where(counters.c.tenant == tenant, counters.c.name == name)
+                .values(value=counters.c.value + 1)
+            )
+            if res.rowcount == 0:
+                c.execute(insert(counters).values(tenant=tenant, name=name, value=1))
 
     # ---------- documents and versions
 

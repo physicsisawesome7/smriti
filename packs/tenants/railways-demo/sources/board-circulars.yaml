@@ -6,7 +6,7 @@ mode: http                 # http | playwright | rss | file
 schedule: '0 */6 * * *'
 legal_status: public-government-site (GODL-India reuse terms; demo is synthetic)
 start_urls:
-  - http://127.0.0.1:8000/demo-site/circulars
+  - ${SMRITI_SELF_URL:-http://127.0.0.1:8000}/demo-site/circulars
 discover:
   list_selector: 'table.circulars tr:has(td)'
   fields:

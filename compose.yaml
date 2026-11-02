@@ -1,0 +1,164 @@
+# Smriti: one-click on-premise stack. Everything is driven by .env, which the
+# installer (install.sh / install.ps1) writes from deploy/profiles/<profile>.env.
+#
+#   ./install.sh                     detect hardware, write .env, start, wait until ready
+#   docker compose up -d             start with the current .env
+#   docker compose logs -f llm       watch the model load
+#
+# Services
+#   smriti-api     web app + API (stateless, SMRITI_WORKERS processes)
+#   smriti-worker  source schedules, crawls, background ingestion
+#   smriti-init    one-shot: seeds the demo tenant (idempotent)
+#   postgres       documents, versions, audit chain, traces
+#   qdrant         dense + sparse vectors, int8-quantised, payload filters
+#   llm            vLLM, OpenAI-compatible, AWQ weights          (profile: llm)
+#   embed/rerank   Hugging Face TEI on the GPU                    (profile: gpu-encoders)
+#   embed-cpu/...  TEI on the CPU                                 (profile: cpu-encoders)
+
+x-smriti: &smriti
+  build: .
+  image: ${SMRITI_IMAGE:-safearly/smriti:local}
+  env_file: .env
+  environment:
+    SMRITI_DATA_DIR: /data
+    SMRITI_PACKS: ${SMRITI_PACKS:-/app/packs/tenants/railways-demo}
+    SMRITI_DATABASE_URL: postgresql+psycopg://smriti:${POSTGRES_PASSWORD:-smriti}@postgres:5432/smriti
+    SMRITI_VECTOR_BACKEND: qdrant
+    SMRITI_QDRANT_URL: http://qdrant:6333
+    SMRITI_SELF_URL: http://smriti-api:8000
+  volumes:
+    - smriti-data:/data
+    - ./packs:/app/packs:ro          # edit packs on the host; `docker compose restart smriti-api smriti-worker`
+  depends_on:
+    postgres: {condition: service_healthy}
+    qdrant: {condition: service_started}
+  restart: unless-stopped
+
+services:
+  smriti-init:
+    <<: *smriti
+    command: ["smriti", "seed"]
+    restart: "no"
+
+  smriti-api:
+    <<: *smriti
+    command: ["sh", "-c", "exec smriti serve --host 0.0.0.0 --port 8000 --workers ${SMRITI_WORKERS:-2}"]
+    environment:
+      SMRITI_DATA_DIR: /data
+      SMRITI_PACKS: ${SMRITI_PACKS:-/app/packs/tenants/railways-demo}
+      SMRITI_DATABASE_URL: postgresql+psycopg://smriti:${POSTGRES_PASSWORD:-smriti}@postgres:5432/smriti
+      SMRITI_VECTOR_BACKEND: qdrant
+      SMRITI_QDRANT_URL: http://qdrant:6333
+      SMRITI_SELF_URL: http://smriti-api:8000
+      SMRITI_SCHEDULER: "0"
+    ports: ["${SMRITI_BIND:-127.0.0.1}:${SMRITI_PORT:-8000}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      qdrant: {condition: service_started}
+      smriti-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+
+  smriti-worker:
+    <<: *smriti
+    command: ["smriti", "worker"]
+    depends_on:
+      smriti-api: {condition: service_healthy}
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.4-alpine}
+    environment:
+      POSTGRES_USER: smriti
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smriti}
+      POSTGRES_DB: smriti
+    command: ["postgres", "-c", "shared_buffers=${PG_SHARED_BUFFERS:-256MB}", "-c", "max_connections=200"]
+    volumes: ["pg-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smriti -d smriti"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.20.0}
+    environment:
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+    volumes: ["qdrant-data:/qdrant/storage"]
+    restart: unless-stopped
+
+  llm:
+    profiles: ["llm"]
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.32.0}
+    entrypoint: ["bash", "/smriti/vllm-entrypoint.sh"]
+    env_file: .env
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    volumes:
+      - ./deploy/vllm-entrypoint.sh:/smriti/vllm-entrypoint.sh:ro
+      - hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 80
+      start_period: 120s
+    restart: unless-stopped
+
+  embed:
+    profiles: ["gpu-encoders"]
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:86-1.9}
+    command: ["--model-id", "${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}", "--dtype", "float16", "--max-batch-tokens", "${EMBED_MAX_BATCH_TOKENS:-8192}", "--max-client-batch-size", "64"]
+    environment: {HF_TOKEN: "${HF_TOKEN:-}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"}
+    volumes: ["hf-cache:/data"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    restart: unless-stopped
+
+  rerank:
+    profiles: ["gpu-encoders"]
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:86-1.9}
+    command: ["--model-id", "${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}", "--dtype", "float16", "--max-batch-tokens", "${RERANK_MAX_BATCH_TOKENS:-8192}", "--max-client-batch-size", "64"]
+    environment: {HF_TOKEN: "${HF_TOKEN:-}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"}
+    volumes: ["hf-cache:/data"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    restart: unless-stopped
+
+  embed-cpu:
+    profiles: ["cpu-encoders"]
+    image: ${TEI_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    command: ["--model-id", "${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}", "--max-batch-tokens", "${EMBED_MAX_BATCH_TOKENS:-4096}", "--max-client-batch-size", "32"]
+    environment: {HF_TOKEN: "${HF_TOKEN:-}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"}
+    volumes: ["hf-cache:/data"]
+    networks: {default: {aliases: [embed]}}
+    restart: unless-stopped
+
+  rerank-cpu:
+    profiles: ["cpu-rerank"]
+    image: ${TEI_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    command: ["--model-id", "${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}", "--max-batch-tokens", "${RERANK_MAX_BATCH_TOKENS:-4096}", "--max-client-batch-size", "32"]
+    environment: {HF_TOKEN: "${HF_TOKEN:-}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"}
+    volumes: ["hf-cache:/data"]
+    networks: {default: {aliases: [rerank]}}
+    restart: unless-stopped
+
+volumes:
+  smriti-data: {}
+  pg-data: {}
+  qdrant-data: {}
+  hf-cache: {}

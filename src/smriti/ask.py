@@ -23,7 +23,7 @@ from typing import Any
 
 from .engine import Tenant
 from .index import tokenize
-from .llm import ExtractiveWriter, LLMUnavailable, build_messages
+from .llm import ExtractiveWriter, LLMBusy, LLMUnavailable, build_messages
 from .metadata import to_iso
 from .models import Passage, Principal, class_rank
 from .privacy import ConversationMasker
@@ -52,23 +52,48 @@ _writer = ExtractiveWriter()
 
 
 class AnswerCache:
-    """Answer cache keyed by the asker's access hash, so one person's answer
-    is never served to someone with different rights."""
+    """Verified-answer cache, exact and near-duplicate.
 
-    def __init__(self, size: int = 512, ttl: float = 900):
-        self.size, self.ttl = size, ttl
-        self._d: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+    Keyed first by the asker's access hash, the tenant's index generation, the
+    as-of date and the skill, so one person's answer is never served to someone
+    with different rights or after the documents changed. Within that key, a
+    question whose embedding is within ``threshold`` cosine of a cached one
+    reuses its answer, but only if both carry exactly the same identifiers
+    (numbers, clause ids, reference numbers): "clause 16.1" never reuses the
+    answer to "clause 16.2".
+    """
 
-    def get(self, key: str) -> dict[str, Any] | None:
-        v = self._d.get(key)
-        if not v or time.time() - v[0] > self.ttl:
-            return None
+    def __init__(self, size: int = 2048):
+        self.size = size
+        self._d: OrderedDict[str, list[tuple[float, str, frozenset[str], Any, dict[str, Any]]]] = OrderedDict()
+        self._n = 0
+        self.hits = self.misses = 0
+
+    @staticmethod
+    def norm(q: str) -> str:
+        return " ".join(re.sub(r"[^\wऀ-ॿ.%/-]+", " ", q.lower()).split())
+
+    @staticmethod
+    def ids(q: str) -> frozenset[str]:
+        return frozenset(re.findall(r"[A-Za-z]*[-/]?\d[\w./-]*", q.upper()))
+
+    def get(self, key: str, q: str, vec: Any, threshold: float, ttl: float) -> dict[str, Any] | None:
+        now, nq, ids = time.time(), self.norm(q), self.ids(q)
+        for ts, cq, cids, cvec, res in reversed(self._d.get(key, [])):
+            if now - ts > ttl or cids != ids:
+                continue
+            if cq == nq or (vec is not None and cvec is not None and float(vec @ cvec) >= threshold):
+                self.hits += 1
+                self._d.move_to_end(key)
+                return res
+        self.misses += 1
+        return None
+
+    def put(self, key: str, q: str, vec: Any, res: dict[str, Any]) -> None:
+        self._d.setdefault(key, []).append((time.time(), self.norm(q), self.ids(q), vec, res))
+        self._d[key] = self._d[key][-32:]
         self._d.move_to_end(key)
-        return v[1]
-
-    def put(self, key: str, val: dict[str, Any]) -> None:
-        self._d[key] = (time.time(), val)
-        self._d.move_to_end(key)
+        self._n += 1
         while len(self._d) > self.size:
             self._d.popitem(last=False)
 
@@ -157,9 +182,18 @@ def _prepare(
         yield {"event": "final", "data": res}
         return
 
-    key = f"{p.access_key}|{t.generation}|{as_of}|{skill or ''}|{question.lower()}"
-    if use_cache and not history and (hit := _cache.get(key)):
-        res = dict(hit, trace_id=trace_id, cached=True)
+    gen = t.pack.config.generation
+    key = f"{p.access_key}|{t.generation}|{as_of}|{skill or ''}"
+    te = time.perf_counter()
+    qvec = t.query_vector(question)  # computed once: used by the cache and by retrieval
+    embed_ms = round((time.perf_counter() - te) * 1000, 1)
+    if (
+        use_cache
+        and not history
+        and (hit := _cache.get(key, question, qvec, gen.semantic_cache_threshold, gen.cache_ttl_s))
+    ):
+        res = dict(hit, trace_id=trace_id, cached=True, question=question)
+        res["timings_ms"] = {"total": round((time.perf_counter() - t0) * 1000, 1)}
         t.audit.record(
             p.user_id,
             "ask",
@@ -172,7 +206,7 @@ def _prepare(
         return
 
     include_sup = route == "compare"
-    passages, rtrace = t.retrieve(p, question, as_of=as_of, include_superseded=include_sup)
+    passages, rtrace = t.retrieve(p, question, as_of=as_of, include_superseded=include_sup, qvec=qvec)
     for ps in passages:
         if ps.injection_flag:
             events.append(
@@ -202,9 +236,36 @@ def _prepare(
             model_name = "computed-from-source-rows"
 
     if not answer and passages and top_support >= rc.min_support:
-        if t.gw.available("chat"):
+        # Extractive first: for lookups the verified quote often *is* the answer, and
+        # producing it costs no GPU time at all.
+        if route in gen.extractive_first_routes or not t.gw.available("chat"):
+            draft = _writer.write(question, passages, qtokens, skip=_boilerplate(t))
+            if draft and t.gw.available("chat"):
+                v = t.guard.verify(draft, passages)
+                if v["citation_ok"] and v["faithfulness"] >= gen.extractive_min_faithfulness:
+                    answer = draft
+                    events.append(
+                        {
+                            "layer": "execution",
+                            "check": "extractive_first",
+                            "result": "verified quote answers it; model not called",
+                        }
+                    )
+            elif draft:
+                answer = draft
+        if not answer and t.gw.available("chat"):
             role_prompt = " ".join(t.pack.roles.roles[r].prompt for r in p.roles if t.pack.roles.roles[r].prompt)
-            msgs = build_messages(masked_q, passages, t.pack.config.policy, role_prompt, skill, as_of, history)
+            msgs = build_messages(
+                masked_q,
+                passages,
+                t.pack.config.policy,
+                role_prompt,
+                skill,
+                as_of,
+                history,
+                qtokens=qtokens,
+                context_tokens=gen.context_tokens,
+            )
             model_name = t.gw.route("chat").model or "chat"  # type: ignore[union-attr]
             try:
                 if stream:
@@ -216,6 +277,15 @@ def _prepare(
                 else:
                     answer = t.gw.complete("chat", msgs)
                 answer = masker.restore(answer)
+            except LLMBusy as e:
+                events.append(
+                    {
+                        "layer": "execution",
+                        "check": "load_shed",
+                        "result": f"model saturated, served the verified extractive answer: {e}",
+                    }
+                )
+                answer = ""
             except LLMUnavailable as e:
                 events.append(
                     {
@@ -295,12 +365,16 @@ def _prepare(
         model=model_name,
         marking=marking,
     )
-    res["timings_ms"] = {**rtrace["timings_ms"], "total": round((time.perf_counter() - t0) * 1000, 1)}
+    res["timings_ms"] = {
+        "embed_query": embed_ms,
+        **rtrace["timings_ms"],
+        "total": round((time.perf_counter() - t0) * 1000, 1),
+    }
     res["retrieval"] = {k: v for k, v in rtrace.items() if k != "timings_ms"}
     if computed:
         res["computed"] = computed
     if use_cache and not history and not abstained:
-        _cache.put(key, res)
+        _cache.put(key, question, qvec, res)
     t.audit.record(
         p.user_id,
         "ask",

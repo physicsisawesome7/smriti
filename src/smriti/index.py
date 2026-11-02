@@ -23,6 +23,7 @@ import math
 import os
 import re
 import threading
+import time
 import unicodedata
 import uuid
 from collections import defaultdict
@@ -159,6 +160,9 @@ class HashingEmbedder:
         return out
 
 
+QWEN3_QUERY_INSTRUCTION = "Instruct: Given a question, retrieve passages that answer it\nQuery: "
+
+
 class OpenAICompatEmbedder:
     """Any OpenAI-compatible /v1/embeddings server: vLLM, TEI, Ollama, LiteLLM."""
 
@@ -166,8 +170,10 @@ class OpenAICompatEmbedder:
         assert route.base_url and route.model
         self.route = route
         self.name = route.model
-        self.query_instruction = (
-            query_instruction or "Instruct: Given a question, retrieve passages that answer it\nQuery: "
+        # Qwen3-Embedding is trained with an instruction prefix on queries; other models get none
+        default_inst = QWEN3_QUERY_INSTRUCTION if "qwen3-embedding" in route.model.lower() else ""
+        self.query_instruction = next(
+            x for x in (query_instruction, route.query_instruction, default_inst) if x is not None
         )
         key = os.environ.get(route.api_key_env or "", "") if route.api_key_env else ""
         self.client = httpx.Client(
@@ -175,7 +181,11 @@ class OpenAICompatEmbedder:
             timeout=route.timeout_s,
             headers={"Authorization": f"Bearer {key}"} if key else {},
         )
-        self.dim = len(self._call(["dimension probe"])[0])
+        if self.query_instruction or route.document_instruction:
+            # prefixes change the vectors, so they are part of the cache and collection identity
+            sig = hashlib.sha256(f"{self.query_instruction}|{route.document_instruction}".encode()).hexdigest()[:6]
+            self.name = f"{route.model}#{sig}"
+        self.dim = len(_wait_for(lambda: self._call(["dimension probe"])[0], f"embedder {route.model}"))
 
     def _call(self, texts: list[str]) -> list[list[float]]:
         r = self.client.post("/embeddings", json={"model": self.route.model, "input": texts})
@@ -183,11 +193,14 @@ class OpenAICompatEmbedder:
         return [d["embedding"] for d in sorted(r.json()["data"], key=lambda d: d["index"])]
 
     def embed(self, texts: list[str], *, query: bool = False) -> np.ndarray:
-        if query:
+        if query and self.query_instruction:
             texts = [self.query_instruction + t for t in texts]
+        elif not query and self.route.document_instruction:
+            texts = [self.route.document_instruction + t for t in texts]
         vecs: list[list[float]] = []
-        for i in range(0, len(texts), 64):
-            vecs.extend(self._call(texts[i : i + 64]))
+        bs = max(1, self.route.batch_size)
+        for i in range(0, len(texts), bs):
+            vecs.extend(self._call(texts[i : i + bs]))
         arr = np.asarray(vecs, dtype=np.float32)
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         return arr / np.where(norms == 0, 1, norms)
@@ -224,44 +237,80 @@ class VectorIndex(Protocol):
 
 
 class LocalIndex:
+    """In-process dense + BM25 index for single-box installs.
+
+    State lives in growable numpy arrays (vectors, alive/current flags, a
+    document code per chunk), so the access filter is one vectorised
+    ``isin`` over document codes instead of a rule evaluation per chunk, and
+    adding chunks is amortised O(1) instead of a full matrix copy.
+    """
+
     def __init__(self, dim: int):
         self.dim = dim
         self._lock = threading.RLock()
         self.ids: list[str] = []
         self.pos: dict[str, int] = {}
         self.payloads: list[dict[str, Any]] = []
-        self.alive: list[bool] = []
-        self.mat = np.zeros((0, dim), dtype=np.float32)
-        self._pending: list[np.ndarray] = []
+        self._n = 0
+        self._mat = np.zeros((1024, dim), dtype=np.float32)
+        self._alive = np.zeros(1024, dtype=bool)
+        self._cur = np.zeros(1024, dtype=bool)
+        self._doc = np.zeros(1024, dtype=np.int32)
+        self._doc_codes: dict[str, int] = {}
         self.postings: dict[str, dict[int, int]] = defaultdict(dict)
         self.doclen: list[int] = []
+        self._len_sum = 0
 
     def __len__(self) -> int:
-        return sum(self.alive)
+        return int(self._alive[: self._n].sum())
 
-    def _flush(self) -> None:
-        if self._pending:
-            self.mat = np.vstack([self.mat, *self._pending]) if len(self.mat) else np.vstack(self._pending)
-            self._pending = []
+    @property
+    def mat(self) -> np.ndarray:
+        return self._mat[: self._n]
+
+    def _grow(self, need: int) -> None:
+        cap = len(self._alive)
+        if need <= cap:
+            return
+        new = max(need, cap * 2)
+        mat = np.zeros((new, self.dim), dtype=np.float32)
+        mat[:cap] = self._mat
+        self._mat = mat
+        for name in ("_alive", "_cur", "_doc"):
+            arr = getattr(self, name)
+            grown = np.zeros(new, dtype=arr.dtype)
+            grown[:cap] = arr
+            setattr(self, name, grown)
+
+    def _code(self, doc_id: str) -> int:
+        c = self._doc_codes.get(doc_id)
+        if c is None:
+            c = self._doc_codes[doc_id] = len(self._doc_codes)
+        return c
 
     def upsert(self, items: list[tuple[str, np.ndarray, str, dict[str, Any]]]) -> None:
         with self._lock:
+            self._grow(self._n + len(items))
             for cid, vec, text, payload in items:
                 if cid in self.pos:
                     i = self.pos[cid]
-                    self._flush()
-                    self.mat[i] = vec
+                    self._mat[i] = vec
                     self.payloads[i] = payload
-                    self.alive[i] = True
+                    self._alive[i] = True
+                    self._cur[i] = bool(payload.get("current", True))
                     continue
-                i = len(self.ids)
+                i = self._n
+                self._n += 1
                 self.ids.append(cid)
                 self.pos[cid] = i
                 self.payloads.append(payload)
-                self.alive.append(True)
-                self._pending.append(vec.reshape(1, -1).astype(np.float32))
+                self._mat[i] = vec
+                self._alive[i] = True
+                self._cur[i] = bool(payload.get("current", True))
+                self._doc[i] = self._code(payload["doc_id"])
                 toks = tokenize(text)
                 self.doclen.append(len(toks))
+                self._len_sum += len(toks)
                 tf: dict[str, int] = defaultdict(int)
                 for t in toks:
                     tf[t] += 1
@@ -272,46 +321,52 @@ class LocalIndex:
         with self._lock:
             for cid in chunk_ids:
                 if cid in self.pos:
-                    self.payloads[self.pos[cid]].update(updates)
+                    i = self.pos[cid]
+                    self.payloads[i].update(updates)
+                    if "current" in updates:
+                        self._cur[i] = bool(updates["current"])
 
     def set_payload_where(self, doc_id: str, updates: dict[str, Any]) -> None:
         with self._lock:
-            for p in self.payloads:
-                if p.get("doc_id") == doc_id:
-                    p.update(updates)
+            code = self._doc_codes.get(doc_id)
+            if code is None:
+                return
+            for i in np.nonzero(self._doc[: self._n] == code)[0]:
+                self.payloads[i].update(updates)
+                if "current" in updates:
+                    self._cur[i] = bool(updates["current"])
 
     def delete(self, chunk_ids: list[str]) -> None:
         with self._lock:
             for cid in chunk_ids:
                 if cid in self.pos:
-                    self.alive[self.pos[cid]] = False
+                    self._alive[self.pos[cid]] = False
 
     def search(self, qvec, qtokens, allow, qfilter, k, rrf_k, current_only):  # type: ignore[no-untyped-def]
         with self._lock:
-            self._flush()
-            n = len(self.ids)
+            n = self._n
             if n == 0:
                 return []
             # Filter first: unauthorised or retired chunks never enter ranking.
-            ok = np.fromiter(
-                (
-                    self.alive[i]
-                    and (not current_only or self.payloads[i].get("current", True))
-                    and allow(self.payloads[i])
-                    for i in range(n)
-                ),
-                dtype=bool,
-                count=n,
-            )
+            ok = self._alive[:n].copy()
+            if current_only:
+                ok &= self._cur[:n]
+            if isinstance(allow, (set, frozenset)):
+                codes = np.fromiter((self._doc_codes[d] for d in allow if d in self._doc_codes), dtype=np.int32)
+                ok &= np.isin(self._doc[:n], codes)
+            else:
+                ok &= np.fromiter((allow(self.payloads[i]) for i in range(n)), dtype=bool, count=n)
             if not ok.any():
                 return []
-            dense = self.mat @ qvec.astype(np.float32)
+            dense = self._mat[:n] @ qvec.astype(np.float32)
             dense[~ok] = -np.inf
-            d_order = np.argsort(-dense)[:k]
-            d_rank = {int(i): r for r, i in enumerate(d_order) if np.isfinite(dense[i])}
+            kk = min(k, int(ok.sum()))
+            d_order = np.argpartition(-dense, kk - 1)[:kk]
+            d_order = d_order[np.argsort(-dense[d_order])]
+            d_rank = {int(i): r for r, i in enumerate(d_order)}
 
             scores: dict[int, float] = defaultdict(float)
-            avgdl = (sum(self.doclen) / n) or 1.0
+            avgdl = (self._len_sum / n) or 1.0
             for t in set(qtokens):
                 post = self.postings.get(t)
                 if not post:
@@ -341,7 +396,7 @@ class QdrantIndex:
         from qdrant_client import QdrantClient, models  # type: ignore[import-not-found]
 
         self.m = models
-        self.client = QdrantClient(url=url)
+        self.client = QdrantClient(location=":memory:") if url == ":memory:" else QdrantClient(url=url)
         self.collection = collection
         self.dim = dim
         if not self.client.collection_exists(collection):
@@ -418,7 +473,13 @@ class QdrantIndex:
             limit=k,
             with_payload=True,
         ).points
-        return [Hit(p.payload["chunk_id"], float(p.score), None, None, p.payload) for p in res if allow(p.payload)]
+        return [
+            Hit(p.payload["chunk_id"], float(p.score), None, None, p.payload) for p in res if _allowed(allow, p.payload)
+        ]
+
+
+def _allowed(allow: Any, payload: dict[str, Any]) -> bool:
+    return payload["doc_id"] in allow if isinstance(allow, (set, frozenset)) else bool(allow(payload))
 
 
 # ---------------------------------------------------------------- rerankers
@@ -471,19 +532,58 @@ class LexicalReranker:
 
 
 class HttpReranker:
-    """Cross-encoder served with a TEI-compatible /rerank endpoint
-    (bge-reranker-v2-m3, Qwen3 reranker)."""
+    """Cross-encoder over HTTP. Speaks TEI's ``/rerank`` (``[{index, score}]``)
+    and the Cohere/Jina style used by vLLM and Infinity
+    (``{results: [{index, relevance_score}]}``)."""
 
     def __init__(self, route: ModelRoute):
         assert route.base_url
         self.route = route
         self.name = route.model or "http-reranker"
         self.client = httpx.Client(base_url=route.base_url.rstrip("/"), timeout=route.timeout_s)
+        _wait_for(lambda: self._post("ready", ["probe"]), f"reranker {self.name}")
+
+    def _post(self, query: str, texts: list[str]) -> list[float]:
+        r = self.client.post(
+            "/rerank",
+            json={
+                "model": self.route.model,
+                "query": query,
+                "texts": texts,
+                "documents": texts,
+                "raw_scores": False,
+                "truncate": True,
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("results", []) if isinstance(data, dict) else data
+        scores = [0.0] * len(texts)
+        for item in items:
+            scores[item["index"]] = float(item.get("score", item.get("relevance_score", 0.0)))
+        return scores
 
     def score(self, query, qtokens, texts, prior):  # type: ignore[no-untyped-def]
-        r = self.client.post("/rerank", json={"query": query, "texts": texts, "raw_scores": False})
-        r.raise_for_status()
-        scores = [0.0] * len(texts)
-        for item in r.json():
-            scores[item["index"]] = float(item["score"])
-        return scores
+        if not texts:
+            return []
+        out: list[float] = []
+        bs = max(1, self.route.batch_size)
+        for i in range(0, len(texts), bs):
+            out.extend(self._post(query, [t[:2000] for t in texts[i : i + bs]]))
+        return out
+
+
+def _wait_for(fn: Callable[[], Any], what: str) -> Any:
+    """Model servers take minutes to download and load weights on first start.
+    Wait for them (SMRITI_MODEL_WAIT_S, default 900 s) instead of crashing."""
+    deadline = time.monotonic() + float(os.environ.get("SMRITI_MODEL_WAIT_S", "900"))
+    delay = 2.0
+    while True:
+        try:
+            return fn()
+        except (httpx.HTTPError, KeyError, ValueError, IndexError) as e:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"{what} not reachable: {e}") from e
+            print(f"waiting for {what}: {type(e).__name__}", flush=True)
+            time.sleep(delay)
+            delay = min(delay * 1.5, 15.0)
