@@ -100,6 +100,8 @@ The **Agents** view builds assistants with their own instructions, sources and t
 
 **Workflows** chain steps on a visual canvas: AI agent, If / else, Set state, Code (sandboxed Python), Human approval, Loop and End, with `{{ }}` templates and a safe expression language. Each agent step keeps the guarantees above (it acts as the asker, masks personal data, verifies its citations), approvals pause the whole run, and a step limit stops cycles. Templates: sign-off before release, answer a list of questions, route by topic. See [docs/workflows.md](docs/workflows.md).
 
+**Integrations** put a published agent in a web page (one `<script>` tag, shadow-DOM widget with streaming cited answers), Slack, Telegram or Discord. Each one answers as a stated identity: its creator, signed-in users of the host site (HMAC tokens), or mapped chat users. Replies to chat apps have personal data masked and withhold answers citing confidential documents. Approvals are buttons only the asker can press, and every inbound request is signature- or origin-checked. See [docs/integrations.md](docs/integrations.md).
+
 ## Configuration: tenant packs
 
 Each customer is a directory of YAML and Markdown. Platform defaults load first, then the vertical pack (`packs/verticals/railways`), then the tenant pack (`packs/tenants/railways-demo`). Later layers win.

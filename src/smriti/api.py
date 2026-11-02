@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, agents, connectors, demo, evals, memory, skills, watch
+from . import __version__, agents, channels_api, connectors, demo, evals, memory, skills, watch
 from .access import UnknownUser, evaluate
 from .agents import api as agents_api
 from .agents import runtime as agents_rt
@@ -895,6 +895,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     key_or_user = agents_api.mount(app, plat, ctx, need)
+    channels_api.mount(app, plat, ctx, need)
 
     # ------------------------------------------------------------ OpenAI-compatible
 

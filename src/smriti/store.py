@@ -392,6 +392,36 @@ api_keys = Table(
     Column("revoked", Boolean, nullable=False, default=False),
 )
 
+channels = Table(
+    "channels",
+    md,
+    Column("id", String(32), primary_key=True),  # public id: widget embed id, webhook path
+    Column("tenant", String(64), nullable=False, index=True),
+    Column("kind", String(16), nullable=False),  # widget | slack | telegram | discord
+    Column("name", String(200), nullable=False),
+    Column("agent_id", String(64), nullable=False),
+    Column("acts_as", String(128), nullable=False),  # fixed identity; never more access than its creator
+    Column("config", Text, nullable=False, default="{}"),  # public settings (origins, user map, ...)
+    Column("secrets", Text),  # sealed with the SecretBox: bot tokens, signing secrets
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("last_used", Float),
+    Column("calls", Integer, nullable=False, default=0),
+)
+
+channel_threads = Table(
+    "channel_threads",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("tenant", String(64), nullable=False),
+    Column("channel_id", String(32), nullable=False, index=True),
+    Column("thread", String(200), nullable=False),  # chat id, Slack thread, Discord channel
+    Column("user_id", String(128), nullable=False),
+    Column("conversation_id", String(32), nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
 artifacts = Table(
     "artifacts",
     md,

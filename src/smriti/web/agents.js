@@ -77,7 +77,7 @@ async function viewAgents() {
   if (AG.shared) return viewShared();
   if (AG.tab === "chat" && AG.chat) return viewAgentChat();
   if (AG.tab === "build") return viewBuilder();
-  const tabs = [["agents", "Agents"], ["tools", "Tools"]];
+  const tabs = [["agents", "Agents"], ["tools", "Tools"], ["channels", "Integrations"]];
   $("#view").innerHTML = `
     <div class="eyebrow">Agents</div>
     <h1>Agents that cite their work</h1>
@@ -85,7 +85,7 @@ async function viewAgents() {
     <div class="tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${AG.tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
     <div id="agBody"></div>`;
   $$(".tabs button").forEach((b) => (b.onclick = () => { AG.tab = b.dataset.tab; viewAgents(); }));
-  await ({ agents: tabAgentList, tools: tabTools }[AG.tab] || tabAgentList)($("#agBody"));
+  await ({ agents: tabAgentList, tools: tabTools, channels: tabChannels }[AG.tab] || tabAgentList)($("#agBody"));
 }
 
 /* ------------------------------------------------------------ list */
