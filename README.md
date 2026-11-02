@@ -98,6 +98,8 @@ The **Ingest** view connects websites (multi-page crawls), single links, file up
 
 The **Agents** view builds assistants with their own instructions, sources and tools, in three kinds: **Classic** (cited answers from chosen sources), **Agentic** (a tool loop over library search, calculator, web search, web pages, a Python sandbox with no network, files, tenant skills, REST APIs from OpenAPI specs, MCP servers and read-only SQL) and **Research** (sub-questions, each verified, merged into one cited report). An agent acts as the person asking. Every tool result is a citable passage, so agent answers get the same sentence-level verification. Actions that change data wait for approval, always so after the run has read outside content. Conversations are saved and can be shared without leaking: a viewer sees only answers whose sources they can open. Per-agent API keys work on `/api/agents/{id}/chat` and `/v1/chat/completions` (model `agent/<id>`). See [docs/agents.md](docs/agents.md).
 
+**Workflows** chain steps on a visual canvas: AI agent, If / else, Set state, Code (sandboxed Python), Human approval, Loop and End, with `{{ }}` templates and a safe expression language. Each agent step keeps the guarantees above (it acts as the asker, masks personal data, verifies its citations), approvals pause the whole run, and a step limit stops cycles. Templates: sign-off before release, answer a list of questions, route by topic. See [docs/workflows.md](docs/workflows.md).
+
 ## Configuration: tenant packs
 
 Each customer is a directory of YAML and Markdown. Platform defaults load first, then the vertical pack (`packs/verticals/railways`), then the tenant pack (`packs/tenants/railways-demo`). Later layers win.

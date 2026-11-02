@@ -827,14 +827,21 @@ def chat(
         add_message(t, conversation_id, "user", question)
     else:
         conversation_id = None
-    run = Run(t, p, agent, box, trigger=trigger, conversation_id=conversation_id)
+    if agent.get("kind") == "workflow":
+        from .workflow import WorkflowRun
+
+        run: Run = WorkflowRun(t, p, agent, box, trigger=trigger, conversation_id=conversation_id)
+    else:
+        run = Run(t, p, agent, box, trigger=trigger, conversation_id=conversation_id)
     yield {"event": "start", "data": {"run_id": run.id, "conversation_id": conversation_id}}
     for ev in run.start(question, hist):
         yield _clean(ev)
 
 
 def approve(t: Any, p: Principal, box: Any, run_id: str, ok: bool) -> Iterator[dict[str, Any]]:
-    run = Run.load(t, p, box, run_id)
+    from .workflow import load_run
+
+    run = load_run(t, p, box, run_id)
     yield {"event": "start", "data": {"run_id": run.id, "conversation_id": run.conversation_id}}
     for ev in run.resume(ok):
         yield _clean(ev)

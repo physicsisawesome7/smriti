@@ -43,6 +43,8 @@ from . import (
     tool_view,
 )
 from . import runtime as rt
+from . import workflow as wf
+from .expr import FUNCS
 from .tools import ToolError
 
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -130,6 +132,12 @@ def mount(
         need(p, "view")
         return {
             "kinds": [{"kind": k, "description": v} for k, v in KINDS.items()],
+            "workflow": {
+                "nodes": [{"type": k, "label": v} for k, v in wf.NODE_TYPES.items()],
+                "templates": wf.TEMPLATES,
+                "functions": sorted(FUNCS),
+                "max_steps": wf.MAX_STEPS,
+            },
             "tools": catalog(),
             "configured": [tool_view(r, box) for r in _tools(t)],
             "model": t.gw.describe()["routes"]["chat"],

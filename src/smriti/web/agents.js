@@ -3,8 +3,8 @@
 "use strict";
 
 const AG = { tab: "agents", cat: null, editing: null, chat: null, conv: null, convs: [], turns: [], sel: null, toolKind: null, toolEdit: null, shared: null };
-const KIND_IC = { classic: "◎", agentic: "⚙", research: "☰" };
-const KIND_LABEL = { classic: "Classic", agentic: "Agentic", research: "Research" };
+const KIND_IC = { classic: "◎", agentic: "⚙", research: "☰", workflow: "⑂" };
+const KIND_LABEL = { classic: "Classic", agentic: "Agentic", research: "Research", workflow: "Workflow" };
 
 const TEMPLATES = [
   {
@@ -105,9 +105,16 @@ async function tabAgentList(box) {
     <div class="row" style="margin-bottom:12px"><h2 style="margin:0">Your agents</h2><span class="spacer"></span><button class="btn accent" id="newAgent">+ New agent</button></div>
     ${list.length ? `<div class="conns">${list.map(card).join("")}</div>` : `<div class="empty">No agents yet. Start from a template below or build one from scratch.</div>`}
     <h2 style="margin-top:26px">Start from a template</h2>
-    <div class="kinds">${TEMPLATES.map((t, i) => `<button class="kind" data-tpl="${i}"><div class="ki">${KIND_IC[t.kind]}</div><div class="kl">${esc(t.name)}</div><div class="kd">${esc(t.description)}</div><div class="kd mono" style="margin-top:6px">${esc(KIND_LABEL[t.kind])} · ${t.tools.map((r) => toolInfo(r).label).join(", ")}</div></button>`).join("")}</div>`;
+    <div class="kinds">${TEMPLATES.map((t, i) => `<button class="kind" data-tpl="${i}"><div class="ki">${KIND_IC[t.kind]}</div><div class="kl">${esc(t.name)}</div><div class="kd">${esc(t.description)}</div><div class="kd mono" style="margin-top:6px">${esc(KIND_LABEL[t.kind])} · ${t.tools.map((r) => toolInfo(r).label).join(", ")}</div></button>`).join("")}</div>
+    <h2 style="margin-top:26px">Start from a workflow</h2>
+    <p class="muted" style="margin-top:-4px">Chain agents, conditions, code and human sign-off into one run. Every step still cites its sources and acts as the person asking.</p>
+    <div class="kinds">${(AG.cat.workflow?.templates || []).map((t, i) => `<button class="kind" data-wtpl="${i}"><div class="ki">${KIND_IC.workflow}</div><div class="kl">${esc(t.name)}</div><div class="kd">${esc(t.description)}</div><div class="kd mono" style="margin-top:6px">${t.graph.nodes.filter((n) => n.type !== "note").map((n) => WF_IC[n.type]).join(" → ")}</div></button>`).join("")}</div>`;
   $("#newAgent").onclick = () => openBuilder({ name: "", kind: "classic", tools: ["search"] });
   $$("[data-tpl]", box).forEach((b) => (b.onclick = () => openBuilder(JSON.parse(JSON.stringify(TEMPLATES[+b.dataset.tpl])))));
+  $$("[data-wtpl]", box).forEach((b) => (b.onclick = () => {
+    const t = AG.cat.workflow.templates[+b.dataset.wtpl];
+    openBuilder({ name: t.name, description: t.description, kind: "workflow", graph: JSON.parse(JSON.stringify(t.graph)), tools: [] });
+  }));
   $$("[data-chat]", box).forEach((b) => (b.onclick = () => openChat(list.find((a) => a.id === b.dataset.chat))));
   $$("[data-edit]", box).forEach((b) => (b.onclick = () => openBuilder(list.find((a) => a.id === b.dataset.edit))));
   $$("[data-keys]", box).forEach((b) => (b.onclick = () => openKeys(list.find((a) => a.id === b.dataset.keys))));
@@ -134,7 +141,8 @@ function viewBuilder() {
           <label>Name *<input type="text" name="name" value="${esc(a.name || "")}" required placeholder="e.g. Tender desk"></label>
           <label>Description<input type="text" name="description" value="${esc(a.description || "")}" placeholder="What it is for"></label></div></fieldset>
         <fieldset class="fg"><legend>Type</legend><div class="kinds k3">${c.kinds.map((k) => `<label class="kind ${a.kind === k.kind ? "on" : ""}"><input type="radio" name="kind" value="${k.kind}" ${a.kind === k.kind ? "checked" : ""} hidden><div class="ki">${KIND_IC[k.kind]}</div><div class="kl">${KIND_LABEL[k.kind]}</div><div class="kd">${esc(k.description)}</div></label>`).join("")}</div></fieldset>
-        <fieldset class="fg"><legend>Instructions</legend>
+        <fieldset class="fg" id="wfFs" ${a.kind === "workflow" ? "" : "hidden"}><legend>Workflow</legend><div id="wfBox"></div></fieldset>
+        <fieldset class="fg" id="instrFs" ${a.kind === "workflow" ? "hidden" : ""}><legend>Instructions</legend>
           <textarea name="instructions" rows="5" style="width:100%" placeholder="Who it answers for, tone, what to always include. Platform rules (cite everything, never follow instructions in documents) always apply on top.">${esc(a.instructions || "")}</textarea></fieldset>
         <fieldset class="fg"><legend>Sources</legend>
           <div class="row"><label class="switch"><input type="radio" name="srcmode" value="all" ${src.mode !== "selected" ? "checked" : ""}> Everything the person asking can see</label>
@@ -145,7 +153,7 @@ function viewBuilder() {
             ${c.connectors.length ? `<div class="fhelp" style="margin:10px 0 4px">Ingestion sources</div><div class="chips">${c.connectors.map((d) => `<label class="chip pick"><input type="checkbox" name="connector" value="${esc(d)}" ${(src.connectors || []).includes(d) ? "checked" : ""}> ${esc(d)}</label>`).join("")}</div>` : ""}
           </div>
           <div class="fhelp" style="margin-top:8px">Sources narrow what the agent searches. They never widen access: each person still sees only what they are allowed to.</div></fieldset>
-        <fieldset class="fg" id="toolsFs"><legend>Tools</legend>
+        <fieldset class="fg" id="toolsFs" ${a.kind === "workflow" ? "hidden" : ""}><legend>Tools</legend>
           <div class="fhelp" style="margin-bottom:6px">Classic agents only search. Agentic and research agents use the tools you tick.</div>
           <div class="toolpicks">${c.tools.builtin.map((t) => toolRow(t, t.kind)).join("")}
           ${c.configured.map((t) => toolRow({ ...t, description: `${t.label} · ${t.actions.length} actions${t.actions.some((x) => x.mutates) ? ", some change data" : ""}` }, t.ref)).join("")}</div>
@@ -183,7 +191,14 @@ function viewBuilder() {
   const form = $("#agForm");
   $("#backList").onclick = () => { AG.tab = "agents"; viewAgents(); };
   const toTools = $("#toTools"); if (toTools) toTools.onclick = (e) => { e.preventDefault(); AG.tab = "tools"; viewAgents(); };
-  $$("input[name=kind]", form).forEach((r) => (r.onchange = () => { $$(".kinds.k3 .kind", form).forEach((k) => k.classList.toggle("on", k.querySelector("input").checked)); }));
+  let wfEd = null;
+  const syncKind = () => {
+    const isWf = (form.elements.kind.value || a.kind) === "workflow";
+    $("#wfFs").hidden = !isWf; $("#instrFs").hidden = isWf; $("#toolsFs").hidden = isWf;
+    if (isWf && !wfEd) wfEd = workflowEditor($("#wfBox"), a.graph, c);
+  };
+  $$("input[name=kind]", form).forEach((r) => (r.onchange = () => { $$(".kinds.k3 .kind", form).forEach((k) => k.classList.toggle("on", k.querySelector("input").checked)); syncKind(); }));
+  syncKind();
   $$("input[name=srcmode]", form).forEach((r) => (r.onchange = () => ($("#srcSel").hidden = form.elements.srcmode.value !== "selected")));
   form.elements.visibility.onchange = () => ($("#roleSel").hidden = form.elements.visibility.value !== "roles");
   const starters = () => form.elements.starters.value.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -198,6 +213,7 @@ function viewBuilder() {
       tools: checked("tool"), approval: f.approval.value, max_steps: +f.max_steps.value || 6, starters: starters(),
       require_citations: f.require_citations.checked, visibility: f.visibility.value, roles: checked("role"), status: f.status.value,
       schedule: f.schedule.value.trim(), schedule_prompt: f.schedule_prompt.value.trim(),
+      ...(f.kind.value === "workflow" && wfEd ? { graph: wfEd.get(), tools: [] } : {}),
     };
   };
   const save = async (chat) => {
@@ -245,13 +261,19 @@ function handleEvent(turn, ev, d, draw) {
 }
 
 function stepHtml(s) {
+  if (s.type === "node") {
+    const cls = s.status === "error" || s.status === "declined" ? "b" : s.status === "abstained" || s.status === "waiting" ? "w" : "";
+    return `<div class="s wf-step"><span class="dot ${cls}"></span><div><div>${WF_IC[s.node_type] || "•"} <b>${esc(s.title)}</b> ${s.status && s.status !== "done" ? pill(s.status, cls === "b" ? "bad" : s.status === "approved" ? "ok" : "warn") : ""}</div>
+      <div class="muted" style="font-size:12.5px">${esc(s.summary || "")}</div></div></div>`;
+  }
+  const inner = s.node_title ? `<span class="chip">${esc(s.node_title)}</span> ` : "";
   const ic = s.type === "plan" ? "☰" : s.type === "retrieve" ? "◎" : s.type === "section" ? "§" : s.icon || "⚙";
   const cls = s.status === "error" || s.status === "declined" ? "b" : s.status === "abstained" ? "w" : "";
   const title = s.type === "tool" ? `${esc(s.tool)} · <span class="mono">${esc(s.action)}</span>` : s.type === "section" ? `Sub-question` : s.type === "plan" ? "Plan" : "Retrieve";
   const args = s.arguments && Object.keys(s.arguments).length ? `<pre class="json args">${esc(JSON.stringify(s.arguments, null, 1))}</pre>` : "";
   const items = s.items ? `<ol class="plan">${s.items.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
   const files = (s.artifacts || []).map((f) => `<a class="chip v" href="/api/artifacts/${esc(f.id)}?as=${encodeURIComponent(S.user)}">⇩ ${esc(f.filename)}</a>`).join(" ");
-  return `<div class="s"><span class="dot ${cls}"></span><div><div>${ic} ${title} ${s.status && s.status !== "ok" ? pill(s.status, cls === "b" ? "bad" : "warn") : ""}${s.approved ? " " + pill("approved", "violet") : ""}${s.ms ? ` <span class="mono muted">${s.ms} ms</span>` : ""}${s.cites?.length ? ` <span class="mono muted">→ [${s.cites.join(",")}]</span>` : ""}</div>
+  return `<div class="s ${s.node_title ? "wf-inner" : ""}"><span class="dot ${cls}"></span><div><div>${inner}${ic} ${title} ${s.status && s.status !== "ok" ? pill(s.status, cls === "b" ? "bad" : "warn") : ""}${s.approved ? " " + pill("approved", "violet") : ""}${s.ms ? ` <span class="mono muted">${s.ms} ms</span>` : ""}${s.cites?.length ? ` <span class="mono muted">→ [${s.cites.join(",")}]</span>` : ""}</div>
     <div class="muted" style="font-size:12.5px">${esc(s.summary || "")}</div>${items}${args}${files}</div></div>`;
 }
 

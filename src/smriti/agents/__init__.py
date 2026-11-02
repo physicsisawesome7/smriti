@@ -1,10 +1,11 @@
 """Agents: saved assistants with their own instructions, sources and tools.
 
-Three kinds:
+Four kinds:
 
     classic   cited question answering over the agent's sources (the ask pipeline)
     agentic   a tool-using loop: search, calculate, call APIs, MCP servers, SQL, code
     research  plans sub-questions, answers each with verified citations, writes a report
+    workflow  a graph of steps (agents, conditions, code, approvals, loops); see ``workflow``
 
 Whoever asks, an agent only ever sees what that person may see: sources narrow
 retrieval, never widen it, and configured tools carry their own role lists. An
@@ -33,6 +34,7 @@ KINDS = {
     "classic": "Cited answers from the agent's sources. Fast: lookups are answered without the GPU.",
     "agentic": "Uses tools in a loop: searches, calculates, calls APIs, MCP servers and databases, runs code.",
     "research": "Breaks a question into sub-questions, answers each with verified citations, and writes a report.",
+    "workflow": "A graph of steps: agents, conditions, variables, code, human approvals and loops, run in order.",
 }
 APPROVAL = ("mutating", "always", "never")
 DEFAULTS: dict[str, Any] = {
@@ -46,6 +48,7 @@ DEFAULTS: dict[str, Any] = {
     "roles": [],
     "schedule_prompt": "",
     "require_citations": True,
+    "graph": None,
 }
 
 __all__ = ["KINDS", "AgentError", "Tool", "ToolCtx", "ToolError", "catalog"]
@@ -101,6 +104,17 @@ def normalise(body: dict[str, Any]) -> dict[str, Any]:
     cfg["starters"] = [str(s)[:300] for s in (cfg["starters"] or []) if str(s).strip()][:6]
     cfg["roles"] = [str(r) for r in cfg["roles"] or []]
     cfg["instructions"] = str(cfg["instructions"] or "")[:8000]
+    if kind == "workflow":
+        from .workflow import WorkflowError, validate
+
+        try:
+            cfg["graph"] = validate(cfg["graph"])
+        except WorkflowError as e:
+            raise AgentError(str(e)) from e
+        # The graph's agent steps carry their own tools.
+        cfg["tools"] = sorted({ref for n in cfg["graph"]["nodes"] for ref in n["data"].get("tools", [])})
+    else:
+        cfg["graph"] = None
     return {"kind": kind, "config": cfg}
 
 
