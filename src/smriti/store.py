@@ -236,6 +236,48 @@ traces = Table(
     Column("data", Text, nullable=False),
 )
 
+connectors = Table(
+    "connectors",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("tenant", String(64), nullable=False, index=True),
+    Column("name", String(200), nullable=False),
+    Column("kind", String(32), nullable=False),
+    Column("config", Text, nullable=False, default="{}"),
+    Column("secrets", Text, nullable=False, default=""),  # Fernet-sealed JSON, never returned by the API
+    Column("access", Text, nullable=False, default="{}"),
+    Column("doc_type", String(64)),
+    Column("schedule", String(64)),
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("state", Text, nullable=False, default="{}"),  # change-detection snapshot, cursors
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+ingest_jobs = Table(
+    "ingest_jobs",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("tenant", String(64), nullable=False, index=True),
+    Column("connector_id", Integer),
+    Column("kind", String(32), nullable=False),
+    Column("title", String(300)),
+    Column("payload", Text, nullable=False, default="{}"),
+    Column(
+        "status", String(16), nullable=False, index=True
+    ),  # queued | running | done | failed | cancelling | cancelled
+    Column("stats", Text, nullable=False, default="{}"),
+    Column("items", Text, nullable=False, default="[]"),
+    Column("log", Text, nullable=False, default=""),
+    Column("error", Text),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("started_at", Float),
+    Column("finished_at", Float),
+    Column("heartbeat", Float),
+)
+
 counters = Table(
     "counters",
     md,
@@ -574,9 +616,14 @@ class Store:
             pk = res.inserted_primary_key
             return int(pk[0]) if pk and isinstance(pk[0], int) else 0
 
-    def update_row(self, table: Table, where: dict[str, Any], **values: Any) -> None:
+    def update_row(self, table: Table, where: dict[str, Any], **values: Any) -> int:
         with self.engine.begin() as c:
-            c.execute(update(table).where(and_(*[table.c[k] == v for k, v in where.items()])).values(**values))
+            res = c.execute(update(table).where(and_(*[table.c[k] == v for k, v in where.items()])).values(**values))
+            return int(res.rowcount or 0)
+
+    def delete_rows(self, table: Table, **where: Any) -> None:
+        with self.engine.begin() as c:
+            c.execute(delete(table).where(and_(*[table.c[k] == v for k, v in where.items()])))
 
     def rows(
         self, table: Table, order_by: str | None = None, desc: bool = True, limit: int | None = None, **where: Any

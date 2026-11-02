@@ -51,12 +51,17 @@ async function loadMe() {
     $("#sideFoot").innerHTML = `${s.documents_visible}/${s.documents_total} docs visible<br>${s.chunks_indexed} chunks indexed<br>embed: ${esc(s.models.embedder)}<br>rerank: ${esc(s.models.reranker)}<br>chat: ${esc(s.models.routes.chat)}<br>store: ${esc(s.models.vector_backend)}`;
   }).catch(() => {});
   api("/api/alerts").then((a) => ($("#alertCount").textContent = a.length || "")).catch(() => {});
+  const ingestNav = $('#nav a[data-view="ingest"]');
+  ingestNav.hidden = !(can("upload") || can("curate") || can("administer"));
+  if (ingestNav.hidden && S.view === "ingest") S.view = "ask";
+  refreshJobBadge();
 }
 
 /* ------------------------------------------------------------ router */
 
-const VIEWS = { ask: viewAsk, library: viewLibrary, watch: viewWatch, skills: viewSkills, memory: viewMemory, govern: viewGovern };
+const VIEWS = { ask: viewAsk, library: viewLibrary, ingest: viewIngest, watch: viewWatch, skills: viewSkills, memory: viewMemory, govern: viewGovern };
 function go(view) {
+  stopPolling();
   S.view = view;
   store("smriti.view", view);
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
@@ -594,11 +599,12 @@ $$("#nav a").forEach((a) => (a.onclick = () => go(a.dataset.view)));
 $("#userSel").onchange = async (e) => {
   S.user = e.target.value;
   S.turns = []; S.sel = null;
+  ING.types = null; ING.editing = null; ING.kind = null;
   await loadMe();
   go(S.view);
   toast(`Now viewing as ${S.me.user.name}. The same questions can give different, permitted answers.`);
 };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("#drawer").hidden = true; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#drawer").hidden = true; stopPolling(); } });
 (async () => {
   S.user = store("smriti.user");
   try { await loadMe(); } catch (_) { S.user = null; await loadMe(); }

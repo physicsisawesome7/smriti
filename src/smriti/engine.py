@@ -228,7 +228,13 @@ class Tenant:
             sha = hashlib.sha256(data).hexdigest()
             dup = self.store.version_by_sha(self.id, sha)
             if dup:
-                return {"status": "duplicate", "doc_id": dup["doc_id"], "version": dup["version"]}
+                tightened = self._tighten_access(dup["doc_id"], (hints or {}).get("access"), actor)
+                return {
+                    "status": "duplicate",
+                    "doc_id": dup["doc_id"],
+                    "version": dup["version"],
+                    "access_tightened": tightened,
+                }
 
             fm = front_matter(data)
             merged: dict[str, Any] = {**(hints or {}), **fm}
@@ -490,6 +496,29 @@ class Tenant:
                 seen.add(k)
                 uniq.append(o)
         return uniq
+
+    def _tighten_access(self, doc_id: str, requested: dict[str, Any] | None, actor: str) -> bool:
+        """The same content arriving from a second source with stricter access rules
+        makes the document stricter (both sources' rules must hold). It never
+        loosens access: first-come must not decide who can read a file."""
+        if not requested:
+            return False
+        d = self.store.get_document(self.id, doc_id)
+        if not d:
+            return False
+        from .access import strictest
+
+        current = Access.from_dict(d["access"])
+        merged = strictest([d["access"], {**Access.from_dict(requested).to_dict(), "pii": current.pii}])
+        merged.pii = current.pii
+        if merged.to_dict() == current.to_dict() or _no_stricter(current, Access.from_dict(requested)):
+            return False
+        d["access"] = merged.to_dict()
+        self.store.upsert_document(self.id, d)
+        self.index.set_payload_where(doc_id, {"access": d["access"]})
+        self.bump_generation()
+        self.audit.record(actor, "access_tightened", doc_id=doc_id, access=d["access"])
+        return True
 
     def tombstone(self, doc_id: str, actor: str, reason: str) -> None:
         self.store.set_doc_status(self.id, doc_id, "tombstoned")
@@ -785,6 +814,19 @@ class Tenant:
                     return render_rows(header, body[int(m.group(1)) - 1 : int(m.group(2))]), True
         txt, cats = mask_text(c["text"], p.unmask)
         return txt, bool(cats)
+
+
+def _no_stricter(current: Access, new: Access) -> bool:
+    """True when ``new`` adds no restriction that ``current`` lacks."""
+    from .models import class_rank
+
+    if class_rank(new.doc_class) > class_rank(current.doc_class):
+        return False
+    if "*" not in new.divisions and ("*" in current.divisions or not set(current.divisions) <= set(new.divisions)):
+        return False
+    if new.projects and (not current.projects or not set(current.projects) <= set(new.projects)):
+        return False
+    return not (new.groups and not set(new.groups) <= set(current.groups))
 
 
 def _clause_match(a: str, b: str) -> bool:

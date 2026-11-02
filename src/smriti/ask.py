@@ -531,15 +531,17 @@ def _table_answer(
             numeric = [v for v in vals if NUM.fullmatch(v.replace(" ", ""))]
             if len(numeric) < max(1, len(vals) // 2):
                 continue
-            col_terms = set(tokenize(col))
+            col_terms = set(tokenize(re.sub(r"[_\-.]+", " ", col)))  # sanctioned_cost_cr -> sanctioned cost cr
             score = len(col_terms & q) / (len(col_terms) or 1)
             if score <= 0:
                 continue
+            # A row is selected when one of its cell values is named in full in the
+            # question ("Rampur", "NR-DLI"): sharing a fragment ("NR") is not enough.
             filt = [
                 r
                 for r in tbl["rows"]
                 if any(
-                    set(tokenize(cell)) & q
+                    (ct := set(tokenize(cell))) and len(ct) <= 6 and ct <= q
                     for j, cell in enumerate(r)
                     if j != ci and not NUM.fullmatch(cell.replace(" ", ""))
                 )

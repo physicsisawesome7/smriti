@@ -9,7 +9,7 @@ WORKDIR /app
 # git is needed to install Saaf from its repository
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 COPY . /app
-RUN pip install --no-cache-dir "/app[tables,qdrant,postgres,s3]" \
+RUN pip install --no-cache-dir "/app[tables,qdrant,postgres,s3,mcp,mysql]" \
  && useradd --system --uid 10001 smriti && mkdir -p /data && chown smriti /data
 
 USER smriti

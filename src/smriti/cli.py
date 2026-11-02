@@ -130,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
 
         from .api import create_app
 
+        # Smriti's own address, used by demo presets and pack sources that point at it
+        me = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host  # noqa: S104 - comparing, not binding
+        os.environ.setdefault("SMRITI_SELF_URL", f"http://{me}:{args.port}")
+        os.environ.setdefault("SMRITI_PUBLIC_URL", os.environ["SMRITI_SELF_URL"])
         s = Settings.from_env()
         workers = args.workers
         if workers > 1 and s.vector_backend != "qdrant":
@@ -150,10 +154,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "worker":
+        from .connectors import JobRunner
         from .watch import Scheduler
 
         plat = _platform(args)
-        print(f"worker: watching {sum(len(t.pack.sources) for t in plat.tenants.values())} sources", flush=True)
+        n = sum(len(t.pack.sources) for t in plat.tenants.values())
+        print(f"worker: {n} pack sources on schedule; running ingestion jobs", flush=True)
+        JobRunner(plat.tenants, plat.box).start()
         sched = Scheduler(plat.tenants)
         sched.run()  # blocks
         return 0

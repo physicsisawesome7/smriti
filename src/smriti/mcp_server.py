@@ -11,14 +11,14 @@ from typing import Any
 
 
 def serve_stdio(plat: Any, user: str) -> None:
-    from mcp.server.fastmcp import FastMCP  # needs smriti[mcp]
+    from mcp.server.mcpserver import MCPServer  # needs smriti[mcp] (MCP SDK 2.x)
 
     from .access import evaluate
     from .ask import ask
 
     t = plat.tenant(None)
     p = t.principal(user)
-    mcp = FastMCP("smriti")
+    mcp = MCPServer("smriti", instructions="Permission-checked, version-aware search over the institutional memory.")
 
     @mcp.tool()
     def search_knowledge(query: str, as_of: str | None = None) -> list[dict[str, Any]]:
@@ -64,4 +64,4 @@ def serve_stdio(plat: Any, user: str) -> None:
             "text": "\n\n".join(t.render_for(p, c, d)[0] for c in chunks),
         }
 
-    mcp.run()
+    mcp.run("stdio")

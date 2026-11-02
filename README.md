@@ -90,6 +90,10 @@ These numbers come from a small synthetic corpus with the built-in offline compo
 
 The API is stateless apart from the per-tenant local index. Replicas rebuild that index from the store and embedding cache on start, with no model calls. With Qdrant there is nothing to rebuild.
 
+## Ingestion
+
+The **Ingest** view connects websites (multi-page crawls), single links, file uploads, REST/JSON APIs, SQL databases, MCP servers, RSS/sitemaps and server folders. Each source has a schema-driven form, a dry-run **Test connection**, access and schedule settings, and background jobs with live progress, per-item results and cancel. Requests pass an egress guard against SSRF, credentials are encrypted at rest, and SQL is read-only. Built-in demo targets (a wiki, a JSON API, an MCP server, a SQLite file and a folder) let you try every kind. See [docs/ingestion.md](docs/ingestion.md).
+
 ## Configuration: tenant packs
 
 Each customer is a directory of YAML and Markdown. Platform defaults load first, then the vertical pack (`packs/verticals/railways`), then the tenant pack (`packs/tenants/railways-demo`). Later layers win.

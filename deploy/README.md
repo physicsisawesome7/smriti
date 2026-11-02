@@ -21,7 +21,8 @@ The installer checks Docker and GPU access inside containers, picks a hardware p
                      postgres     qdrant      embed+rerank    llm (vLLM)
                      (docs, audit) (int8 vecs)  (TEI)         (AWQ, prefix cache)
                             ▲
- smriti-worker ─────────────┘  crawls sources on schedule, ingests, raises alerts
+ smriti-worker ─────────────┘  runs ingestion jobs (uploads, websites, APIs, databases, MCP),
+                               crawls sources on schedule, raises alerts
 ```
 
 ## Profiles
@@ -79,6 +80,8 @@ The GPU profiles add LLM generation time on top. Measure them on your card with 
 | Longer context | raise `LLM_MAX_MODEL_LEN`, lower `LLM_MAX_NUM_SEQS` to keep the KV budget |
 | LLM on another machine | `SMRITI_CHAT_URL=http://host:8000/v1`, `SMRITI_CHAT_MODEL=...`, and remove `llm` from `COMPOSE_PROFILES` |
 | Ollama or llama.cpp instead of vLLM | point `SMRITI_CHAT_URL` at its OpenAI-compatible endpoint |
+| Ingest a shared drive | put or mount it under `./imports` (or set `SMRITI_IMPORTS_DIR`), then add a *Server folder* source for `/imports/...` |
+| Crawl intranet hosts only | `SMRITI_EGRESS_ALLOW_PRIVATE=1` (default). Add exceptions with `SMRITI_EGRESS_ALLOWLIST=host,10.0.0.0/8` |
 | Your own documents and roles | copy `packs/tenants/railways-demo` to `packs/tenants/<you>`, edit the YAML, set `SMRITI_PACKS=/app/packs/tenants/<you>` |
 | Serve the LAN | `SMRITI_BIND=0.0.0.0` and put a TLS reverse proxy in front |
 | Real logins | `SMRITI_AUTH=token` with `SMRITI_API_TOKENS`, behind your SSO proxy |

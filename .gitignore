@@ -22,3 +22,9 @@ data/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# local editor and preview settings
+.claude/
+data-dev/
+imports/*
+!imports/README.txt

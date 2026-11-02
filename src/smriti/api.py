@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import random
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +27,16 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, evals, memory, skills, watch
+from . import __version__, connectors, demo, evals, memory, skills, watch
 from .access import UnknownUser, evaluate
 from .ask import ask, ask_stream
 from .config import Settings, load_pack
+from .connectors.files import EXTRA_ROOTS as folder_roots_registry
+from .credentials import SecretBox
 from .engine import Tenant
 from .models import Principal
-from .store import Store, feedback, make_blob_store, traces
+from .store import Store, feedback, ingest_jobs, make_blob_store, traces
+from .store import connectors as connectors_t
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -61,6 +65,18 @@ class MemoryBody(BaseModel):
     provenance: list[str] = []
 
 
+class ConnectorBody(BaseModel):
+    name: str
+    kind: str
+    values: dict[str, Any] = {}
+
+
+class PreviewBody(BaseModel):
+    kind: str
+    values: dict[str, Any] = {}
+    connector_id: int | None = None  # reuse that connector's stored secrets
+
+
 class Platform:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -73,6 +89,12 @@ class Platform:
             self.tenants[pack.id] = Tenant(pack, self.store, self.blobs, settings)
         self.default = settings.default_tenant or next(iter(self.tenants))
         self.scheduler: watch.Scheduler | None = None
+        self.box = SecretBox(settings.data_dir)
+        self.jobs: connectors.JobRunner | None = None
+        imports = (settings.data_dir / "imports").resolve()
+        if imports not in folder_roots_registry:
+            folder_roots_registry.append(imports)
+        demo.seed_files(settings.data_dir)
 
     def tenant(self, tid: str | None) -> Tenant:
         t = self.tenants.get(tid or self.default)
@@ -87,12 +109,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if settings.scheduler and any(s.schedule for t in plat.tenants.values() for s in t.pack.sources):
+        # Single-box mode runs schedules and ingestion jobs in this process; in Docker
+        # the worker container does (SMRITI_SCHEDULER=0 on the API).
+        if settings.scheduler:
             plat.scheduler = watch.Scheduler(plat.tenants)
             plat.scheduler.start()
-        yield
+            plat.jobs = connectors.JobRunner(plat.tenants, plat.box)
+            plat.jobs.start()
+        async with AsyncExitStack() as stack:
+            if demo_mcp is not None:
+                await stack.enter_async_context(demo_mcp.session_manager.run())
+            yield
         if plat.scheduler:
             plat.scheduler.stop()
+        if plat.jobs:
+            plat.jobs.stop()
 
     app = FastAPI(
         title="Smriti by Safearly",
@@ -102,6 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.platform = plat
+    demo_mcp = demo.mount(app)
 
     # ------------------------------------------------------------ identity
 
@@ -501,6 +533,242 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_alerts(c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
         t, p = c
         return watch.visible_alerts(t, p)
+
+    # ------------------------------------------------------------ ingestion: connectors, uploads, jobs
+
+    def need_manager(p: Principal) -> None:
+        need(p, "curate", "administer")
+
+    @app.get("/api/connectors/types")
+    def api_connector_types(c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
+        return connectors.types()
+
+    @app.get("/api/connectors/presets")
+    def api_connector_presets(c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
+        """Ready-made sources pointing at the built-in demo targets, as the server reaches them."""
+        base = (os.environ.get("SMRITI_SELF_URL") or settings.public_base_url).rstrip("/")
+        imports = (settings.data_dir / "imports").resolve()
+        db = (imports / "db" / "works.db").as_posix()
+        return [
+            {
+                "kind": "website",
+                "name": "Engineering handbook (demo site)",
+                "values": {
+                    "start_url": f"{base}/demo-site/wiki/",
+                    "scope": "path",
+                    "exclude": "login",
+                    "min_interval_s": 0.2,
+                    "max_pages": 30,
+                    "doc_class": "public",
+                },
+            },
+            {
+                "kind": "url",
+                "name": "Monsoon patrolling page (demo)",
+                "values": {"url": f"{base}/demo-site/wiki/monsoon-patrolling.html", "doc_class": "public"},
+            },
+            {
+                "kind": "api",
+                "name": "Notices API (demo)",
+                "values": {
+                    "url": f"{base}/demo-api/notices",
+                    "items_path": "data.items",
+                    "pagination": "page",
+                    "page_param": "page",
+                    "size_param": "per_page",
+                    "page_size": 3,
+                    "date_field": "published_at",
+                    "min_interval_s": 0,
+                    "doc_class": "internal",
+                },
+            },
+            {
+                "kind": "mcp",
+                "name": "Handover notes (demo MCP server)",
+                "values": {"url": f"{base}/demo-mcp/mcp", "doc_class": "internal"},
+            },
+            {
+                "kind": "database",
+                "name": "Works register (demo SQLite)",
+                "values": {
+                    "url": f"sqlite:///{db}",
+                    "query": "SELECT * FROM works_register",
+                    "id_column": "id",
+                    "title_column": "work_name",
+                    "date_column": "updated_at",
+                    "doc_class": "internal",
+                },
+            },
+            {
+                "kind": "database",
+                "name": "Works register as a table (demo)",
+                "values": {
+                    "url": f"sqlite:///{db}",
+                    "query": "SELECT work_name, division, sanctioned_cost_cr, status FROM works_register",
+                    "mode": "table",
+                    "table_title": "Works register sanctioned cost",
+                    "doc_class": "internal",
+                },
+            },
+            {
+                "kind": "folder",
+                "name": "Site documents folder (demo)",
+                "values": {"path": str(imports / "docs"), "doc_class": "internal"},
+            },
+        ]
+
+    @app.get("/api/connectors")
+    def api_connectors(c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        t, p = c
+        need(p, "curate", "administer", "upload")
+        rows = t.store.rows(connectors_t, order_by="id", tenant=t.id)
+        last: dict[int, Any] = {}
+        for j in t.store.rows(ingest_jobs, order_by="id", limit=500, tenant=t.id):
+            if j["connector_id"] is not None and j["connector_id"] not in last:
+                last[j["connector_id"]] = connectors.job_view(j)
+        items = [connectors.view(r, plat.box) | {"last_job": last.get(r["id"])} for r in rows]
+        return {"connectors": items, "pack_sources": watch.source_health(t)}
+
+    @app.post("/api/connectors")
+    def api_connector_create(
+        body: ConnectorBody, run: bool = False, c: tuple[Tenant, Principal] = Depends(ctx)
+    ) -> dict[str, Any]:
+        t, p = c
+        need_manager(p)
+        try:
+            cid = connectors.save(t, plat.box, p.user_id, body.name.strip() or body.kind, body.kind, body.values)
+        except connectors.ConnectorError as e:
+            raise HTTPException(400, str(e)) from e
+        out = connectors.view(connectors.get_row(t, cid), plat.box)
+        if run:
+            out["job_id"] = connectors.enqueue(
+                t, p.user_id, connector_id=cid, kind=body.kind, title=f"First run: {body.name}"
+            )
+        return out
+
+    @app.put("/api/connectors/{cid}")
+    def api_connector_update(
+        cid: int, body: ConnectorBody, c: tuple[Tenant, Principal] = Depends(ctx)
+    ) -> dict[str, Any]:
+        t, p = c
+        need_manager(p)
+        try:
+            row = connectors.get_row(t, cid)
+            connectors.save(
+                t, plat.box, p.user_id, body.name.strip() or row["name"], row["kind"], body.values, connector_id=cid
+            )
+        except KeyError:
+            raise HTTPException(404) from None
+        except connectors.ConnectorError as e:
+            raise HTTPException(400, str(e)) from e
+        return connectors.view(connectors.get_row(t, cid), plat.box)
+
+    @app.delete("/api/connectors/{cid}")
+    def api_connector_delete(cid: int, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        """Removes the source configuration; documents it ingested stay in the library."""
+        t, p = c
+        need_manager(p)
+        t.store.delete_rows(connectors_t, tenant=t.id, id=cid)
+        t.audit.record(p.user_id, "connector_delete", connector_id=cid)
+        return {"ok": True}
+
+    @app.post("/api/connectors/{cid}/enabled")
+    def api_connector_enable(cid: int, enabled: bool, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        t, p = c
+        need_manager(p)
+        t.store.update_row(connectors_t, {"id": cid, "tenant": t.id}, enabled=enabled)
+        t.audit.record(p.user_id, "connector_enable", connector_id=cid, enabled=enabled)
+        return {"ok": True}
+
+    @app.post("/api/connectors/preview")
+    def api_connector_preview(body: PreviewBody, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        """Dry run from the wizard: discover and parse a few items, ingest nothing."""
+        t, p = c
+        need_manager(p)
+        if body.kind not in connectors.REGISTRY or body.kind == "upload":
+            raise HTTPException(400, "unknown or non-previewable kind")
+        stored: dict[str, Any] = {}
+        if body.connector_id is not None:
+            row = connectors.get_row(t, body.connector_id)
+            stored = plat.box.open(row["secrets"]) if row["secrets"] else {}
+        t.audit.record(p.user_id, "connector_preview", kind=body.kind)
+        return connectors.preview(t, body.kind, body.values, stored)
+
+    @app.post("/api/connectors/{cid}/run")
+    def api_connector_run(cid: int, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        t, p = c
+        need_manager(p)
+        try:
+            row = connectors.get_row(t, cid)
+        except KeyError:
+            raise HTTPException(404) from None
+        return {
+            "job_id": connectors.enqueue(t, p.user_id, connector_id=cid, kind=row["kind"], title=f"Run: {row['name']}")
+        }
+
+    @app.post("/api/ingest/upload")
+    def api_ingest_upload(
+        files: list[UploadFile] = File(...),  # noqa: B008 - FastAPI dependency idiom
+        doc_class: str = Form("internal"),
+        divisions: str = Form("*"),
+        projects: str = Form(""),
+        groups: str = Form(""),
+        doc_type: str = Form(""),
+        c: tuple[Tenant, Principal] = Depends(ctx),
+    ) -> dict[str, Any]:
+        """Stores the files and queues one job; parsing happens in the background."""
+        t, p = c
+        need(p, "upload")
+        stored = []
+        for f in files:
+            data = f.file.read()
+            if not data:
+                continue
+            if len(data) > 200 * 1024 * 1024:
+                raise HTTPException(413, f"{f.filename}: larger than 200 MB")
+            name = Path(f.filename or "upload.bin").name
+            stored.append({"blob_key": t.blobs.put(data, Path(name).suffix[:10]), "filename": name, "size": len(data)})
+        if not stored:
+            raise HTTPException(400, "no files")
+        config = {
+            "doc_class": doc_class,
+            "divisions": divisions,
+            "projects": projects,
+            "groups": groups,
+            "doc_type": doc_type,
+            "max_items": len(stored),
+        }
+        title = stored[0]["filename"] if len(stored) == 1 else f"{len(stored)} files"
+        jid = connectors.enqueue(
+            t, p.user_id, kind="upload", title=f"Upload: {title}", payload={"config": config, "files": stored}
+        )
+        return {"job_id": jid, "files": len(stored)}
+
+    @app.get("/api/jobs")
+    def api_jobs(limit: int = 50, c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
+        t, p = c
+        need(p, "curate", "administer", "upload")
+        rows = t.store.rows(ingest_jobs, order_by="id", limit=min(limit, 200), tenant=t.id)
+        if not (p.can("curate") or p.can("administer")):
+            rows = [r for r in rows if r["created_by"] == p.user_id]
+        return [connectors.job_view(r) for r in rows]
+
+    @app.get("/api/jobs/{jid}")
+    def api_job(jid: int, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        t, p = c
+        rows = t.store.rows(ingest_jobs, tenant=t.id, id=jid)
+        if not rows or not (p.can("curate") or p.can("administer") or rows[0]["created_by"] == p.user_id):
+            raise HTTPException(404)
+        return connectors.job_view(rows[0], with_items=True)
+
+    @app.post("/api/jobs/{jid}/cancel")
+    def api_job_cancel(jid: int, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        t, p = c
+        rows = t.store.rows(ingest_jobs, tenant=t.id, id=jid)
+        if not rows or not (p.can("curate") or p.can("administer") or rows[0]["created_by"] == p.user_id):
+            raise HTTPException(404)
+        connectors.cancel(t, jid, p.user_id)
+        return {"ok": True}
 
     # ------------------------------------------------------------ skills
 

@@ -29,6 +29,7 @@ x-smriti: &smriti
   volumes:
     - smriti-data:/data
     - ./packs:/app/packs:ro          # edit packs on the host; `docker compose restart smriti-api smriti-worker`
+    - ${SMRITI_IMPORTS_DIR:-./imports}:/imports:ro   # folders for the "Server folder" connector
   depends_on:
     postgres: {condition: service_healthy}
     qdrant: {condition: service_started}

@@ -705,6 +705,15 @@ class Scheduler(threading.Thread):
                             run_source(t, src.source)
                         except Exception:  # noqa: S112 - a failed site never blocks the others
                             continue
+                key = f"{t.id}|connectors|{now.isoformat()}"
+                if key not in self._fired:
+                    self._fired.add(key)
+                    try:
+                        from .connectors import enqueue_scheduled
+
+                        enqueue_scheduled(t, now)  # the job runner executes them
+                    except Exception as e:
+                        print(f"scheduler: {e}", flush=True)
             if len(self._fired) > 10000:
                 self._fired.clear()
 
