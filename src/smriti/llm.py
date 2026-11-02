@@ -168,6 +168,71 @@ class Gateway:
                     time.sleep(0.3 * (2**attempt))
         raise LLMUnavailable(f"{task}: {last}")
 
+    def complete_tools(
+        self,
+        task: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """One step of a tool-using loop: the model either answers or asks for tool calls.
+
+        Uses OpenAI-style function calling (vLLM: ``--enable-auto-tool-choice``).
+        Servers without a tool parser often return Hermes-style
+        ``<tool_call>{...}</tool_call>`` text instead; that is parsed too.
+        """
+        r = self.route(task)
+        if r is None:
+            raise LLMUnavailable(task)
+        body = self._body(r, messages, max_tokens, **({"tools": tools, "tool_choice": "auto"} if tools else {}))
+        last: Exception | None = None
+        with self.slot(r):
+            for attempt in range(3):
+                try:
+                    resp = self._client(r).post("/chat/completions", json=body)
+                    if resp.status_code >= 500 or resp.status_code == 429:
+                        raise httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    u = data.get("usage") or {}
+                    self._meter(task, u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
+                    msg = data["choices"][0]["message"]
+                    content = _strip_think(str(msg.get("content") or ""))
+                    calls = []
+                    for i, tc in enumerate(msg.get("tool_calls") or []):
+                        fn = tc.get("function") or {}
+                        calls.append(
+                            {"id": tc.get("id") or f"call_{i}", "name": fn.get("name", ""), "arguments": _args(fn)}
+                        )
+                    if not calls:
+                        for i, m in enumerate(re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", content, re.S)):
+                            try:
+                                obj = json.loads(m.group(1))
+                            except ValueError:
+                                continue
+                            calls.append(
+                                {
+                                    "id": f"call_{i}",
+                                    "name": obj.get("name", ""),
+                                    "arguments": obj.get("arguments") or {},
+                                }
+                            )
+                        if calls:
+                            content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.S).strip()
+                    return {"content": content, "tool_calls": calls}
+                except httpx.HTTPStatusError as e:
+                    last = e
+                    self.usage.errors += 1
+                    if e.response is not None and 400 <= e.response.status_code < 500 and e.response.status_code != 429:
+                        break
+                    time.sleep(0.3 * (2**attempt))
+                except (httpx.TransportError, KeyError, ValueError, IndexError) as e:
+                    last = e
+                    self.usage.errors += 1
+                    time.sleep(0.3 * (2**attempt))
+        raise LLMUnavailable(f"{task}: {last}")
+
     def stream(self, task: str, messages: list[dict[str, str]]) -> Iterator[str]:
         r = self.route(task)
         if r is None:
@@ -247,6 +312,17 @@ class Gateway:
 
 def _strip_think(text: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.S).strip()
+
+
+def _args(fn: dict[str, Any]) -> dict[str, Any]:
+    raw = fn.get("arguments")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        out = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return out if isinstance(out, dict) else {}
 
 
 # ---------------------------------------------------------------- prompts

@@ -59,7 +59,7 @@ async function loadMe() {
 
 /* ------------------------------------------------------------ router */
 
-const VIEWS = { ask: viewAsk, library: viewLibrary, ingest: viewIngest, watch: viewWatch, skills: viewSkills, memory: viewMemory, govern: viewGovern };
+const VIEWS = { ask: viewAsk, agents: viewAgents, library: viewLibrary, ingest: viewIngest, watch: viewWatch, skills: viewSkills, memory: viewMemory, govern: viewGovern };
 function go(view) {
   stopPolling();
   S.view = view;
@@ -200,7 +200,9 @@ async function doAsk() {
 
 function passageCard(p, cited, hl) {
   return `<div class="passage ${cited ? "cited" : ""} ${hl ? "hl" : ""}" id="p-${p.n}">
-    <div class="ph"><span class="n">[${p.n}]</span><span class="t" data-doc="${esc(p.doc_id)}">${esc(p.title)}</span>
+    <div class="ph"><span class="n">[${p.n}]</span>${p.doc_type === "tool-result"
+      ? (/^https?:/.test(p.note || "") ? `<a class="t" href="${esc(p.note)}" target="_blank" rel="noopener noreferrer">${esc(p.title)} ↗</a>` : `<span class="t tool">${esc(p.title)}</span>`) + pill("tool result", "violet")
+      : `<span class="t" data-doc="${esc(p.doc_id)}">${esc(p.title)}</span>`}
       ${pill(p.status)} ${pill(p.doc_class)} ${p.masked ? pill("PII masked", "violet") : ""}</div>
     <div class="meta">${esc([p.ref_no, p.doc_date, p.clause_id ? "clause " + p.clause_id : null, p.section, "p." + p.page, "score " + p.score].filter(Boolean).join(" · "))}</div>
     ${p.note ? `<div class="meta" style="color:var(--blue)">${esc(p.note)}</div>` : ""}
@@ -241,7 +243,7 @@ function renderEvidence(turn, hlN) {
     </dl></div>`;
   }
   box.innerHTML = html;
-  $$(".passage .t", box).forEach((el) => (el.onclick = () => openDoc(el.dataset.doc)));
+  $$(".passage .t[data-doc]", box).forEach((el) => (el.onclick = () => openDoc(el.dataset.doc)));
   if (hlN) $(`#p-${hlN}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -600,6 +602,8 @@ $("#userSel").onchange = async (e) => {
   S.user = e.target.value;
   S.turns = []; S.sel = null;
   ING.types = null; ING.editing = null; ING.kind = null;
+  Object.assign(AG, { cat: null, chat: AG.chat, conv: null, turns: [], toolKind: null, toolEdit: null });
+  if (AG.tab === "build") AG.tab = "agents";
   await loadMe();
   go(S.view);
   toast(`Now viewing as ${S.me.user.name}. The same questions can give different, permitted answers.`);

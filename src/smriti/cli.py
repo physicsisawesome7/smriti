@@ -99,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("audit-verify")
     vp = sub.add_parser("validate-pack")
     vp.add_argument("path")
+    xp = sub.add_parser("sandbox", help="run the isolated code-execution service for agents")
+    xp.add_argument("--host", default="0.0.0.0")  # noqa: S104 - its own internal-only network
+    xp.add_argument("--port", type=int, default=8080)
     mp = sub.add_parser("mcp")
     mp.add_argument("--as", dest="user", required=True)
     args = ap.parse_args(argv)
@@ -161,8 +164,14 @@ def main(argv: list[str] | None = None) -> int:
         n = sum(len(t.pack.sources) for t in plat.tenants.values())
         print(f"worker: {n} pack sources on schedule; running ingestion jobs", flush=True)
         JobRunner(plat.tenants, plat.box).start()
-        sched = Scheduler(plat.tenants)
+        sched = Scheduler(plat.tenants, plat.box)
         sched.run()  # blocks
+        return 0
+
+    if args.cmd == "sandbox":
+        from .agents.sandbox import serve
+
+        serve(args.host, args.port)
         return 0
 
     if args.cmd == "bench":

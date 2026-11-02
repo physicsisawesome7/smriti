@@ -14,6 +14,8 @@
 #   llm            vLLM, OpenAI-compatible, AWQ weights          (profile: llm)
 #   embed/rerank   Hugging Face TEI on the GPU                    (profile: gpu-encoders)
 #   embed-cpu/...  TEI on the CPU                                 (profile: cpu-encoders)
+#   sandbox        agents' Python runner: no network, read-only, non-root, capped
+#   searxng        self-hosted web search for agents             (profile: search)
 
 x-smriti: &smriti
   build: .
@@ -26,6 +28,8 @@ x-smriti: &smriti
     SMRITI_VECTOR_BACKEND: qdrant
     SMRITI_QDRANT_URL: http://qdrant:6333
     SMRITI_SELF_URL: http://smriti-api:8000
+    SMRITI_SANDBOX_URL: ${SMRITI_SANDBOX_URL:-http://sandbox:8080}
+  networks: [default, sandbox]
   volumes:
     - smriti-data:/data
     - ./packs:/app/packs:ro          # edit packs on the host; `docker compose restart smriti-api smriti-worker`
@@ -51,6 +55,7 @@ services:
       SMRITI_VECTOR_BACKEND: qdrant
       SMRITI_QDRANT_URL: http://qdrant:6333
       SMRITI_SELF_URL: http://smriti-api:8000
+      SMRITI_SANDBOX_URL: ${SMRITI_SANDBOX_URL:-http://sandbox:8080}
       SMRITI_SCHEDULER: "0"
     ports: ["${SMRITI_BIND:-127.0.0.1}:${SMRITI_PORT:-8000}:8000"]
     depends_on:
@@ -69,6 +74,37 @@ services:
     command: ["smriti", "worker"]
     depends_on:
       smriti-api: {condition: service_healthy}
+
+  # Runs code that agents write. Only reachable from the API and worker over an
+  # internal network with no route out; nothing of Smriti's data is mounted.
+  sandbox:
+    build: .
+    image: ${SMRITI_IMAGE:-safearly/smriti:local}
+    command: ["smriti", "sandbox", "--host", "0.0.0.0", "--port", "8080"]
+    networks: [sandbox]
+    user: "65534:65534"
+    read_only: true
+    tmpfs: ["/tmp:size=256m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${SANDBOX_MEMORY:-1g}
+    pids_limit: 256
+    cpus: ${SANDBOX_CPUS:-1.0}
+    environment: {HOME: /tmp, TMPDIR: /tmp}
+    depends_on:
+      smriti-init: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  searxng:
+    profiles: ["search"]
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}   # pin a dated tag for production
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-}   # written by the installer
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes: ["./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    restart: unless-stopped
 
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16.4-alpine}
@@ -157,6 +193,10 @@ services:
     volumes: ["hf-cache:/data"]
     networks: {default: {aliases: [rerank]}}
     restart: unless-stopped
+
+networks:
+  default: {}
+  sandbox: {internal: true}   # no gateway: the sandbox cannot reach the internet or the data services
 
 volumes:
   smriti-data: {}

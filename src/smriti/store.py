@@ -301,6 +301,111 @@ drafts = Table(
     Column("updated_at", Float, nullable=False),
 )
 
+# ---------- agents, tools, conversations
+
+agents = Table(
+    "agents",
+    md,
+    Column("tenant", String(64), primary_key=True),
+    Column("agent_id", String(64), primary_key=True),
+    Column("name", String(200), nullable=False),
+    Column("kind", String(16), nullable=False),  # classic | agentic | research
+    Column("config", Text, nullable=False, default="{}"),
+    Column("owner", String(128), nullable=False),
+    Column("visibility", String(16), nullable=False, default="private"),  # private | tenant | roles
+    Column("status", String(16), nullable=False, default="draft"),  # draft | published
+    Column("schedule", String(64)),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+tool_configs = Table(
+    "tool_configs",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("tenant", String(64), nullable=False, index=True),
+    Column("kind", String(32), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("config", Text, nullable=False, default="{}"),
+    Column("secrets", Text, nullable=False, default=""),  # Fernet-sealed, never returned
+    Column("actions", Text, nullable=False, default="[]"),  # discovered from OpenAPI / MCP, cached
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+conversations = Table(
+    "conversations",
+    md,
+    Column("id", String(32), primary_key=True),
+    Column("tenant", String(64), nullable=False, index=True),
+    Column("user_id", String(128), nullable=False, index=True),
+    Column("agent_id", String(64)),
+    Column("title", Text, nullable=False),
+    Column("share_token", String(48), index=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+messages = Table(
+    "messages",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("conversation_id", String(32), nullable=False, index=True),
+    Column("tenant", String(64), nullable=False),
+    Column("role", String(16), nullable=False),  # user | assistant
+    Column("content", Text, nullable=False),
+    Column("data", Text, nullable=False, default="{}"),  # citations, steps, verification, run id
+    Column("ts", Float, nullable=False),
+)
+
+agent_runs = Table(
+    "agent_runs",
+    md,
+    Column("id", String(32), primary_key=True),
+    Column("tenant", String(64), nullable=False, index=True),
+    Column("agent_id", String(64)),
+    Column("user_id", String(128), nullable=False),
+    Column("conversation_id", String(32)),
+    Column("trigger", String(16), nullable=False),  # chat | api | schedule | preview
+    Column("status", String(24), nullable=False),  # running | awaiting_approval | done | failed
+    Column("state", Text, nullable=False, default="{}"),  # everything needed to resume after an approval
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+api_keys = Table(
+    "api_keys",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("tenant", String(64), nullable=False),
+    Column("agent_id", String(64)),
+    Column("name", String(200), nullable=False),
+    Column("prefix", String(24), nullable=False),
+    Column("key_hash", String(64), nullable=False, unique=True),
+    Column("acts_as", String(128), nullable=False),  # a key never has more access than this person
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("last_used", Float),
+    Column("calls", Integer, nullable=False, default=0),
+    Column("revoked", Boolean, nullable=False, default=False),
+)
+
+artifacts = Table(
+    "artifacts",
+    md,
+    Column("id", String(32), primary_key=True),
+    Column("tenant", String(64), nullable=False),
+    Column("user_id", String(128), nullable=False),
+    Column("conversation_id", String(32)),
+    Column("filename", Text, nullable=False),
+    Column("mime", String(128), nullable=False),
+    Column("blob_key", Text, nullable=False),
+    Column("size", Integer, nullable=False),
+    Column("created_at", Float, nullable=False),
+)
+
 
 def _j(v: Any) -> str:
     return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)

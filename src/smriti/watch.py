@@ -687,9 +687,10 @@ class Scheduler(threading.Thread):
     ``run_source`` inside Temporal workflows for durable retries; this thread
     is the single-server appliance equivalent."""
 
-    def __init__(self, tenants: dict[str, Tenant]):
+    def __init__(self, tenants: dict[str, Tenant], box: Any = None):
         super().__init__(daemon=True, name="smriti-scheduler")
         self.tenants = tenants
+        self.box = box  # unseals tool credentials for scheduled agents
         self._stop = threading.Event()
         self._fired: set[str] = set()
 
@@ -714,6 +715,13 @@ class Scheduler(threading.Thread):
                         enqueue_scheduled(t, now)  # the job runner executes them
                     except Exception as e:
                         print(f"scheduler: {e}", flush=True)
+                    if self.box is not None:
+                        try:
+                            from .agents.runtime import run_scheduled
+
+                            run_scheduled(t, self.box, now)
+                        except Exception as e:
+                            print(f"scheduler: agents: {e}", flush=True)
             if len(self._fired) > 10000:
                 self._fired.clear()
 

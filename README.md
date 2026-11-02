@@ -94,6 +94,10 @@ The API is stateless apart from the per-tenant local index. Replicas rebuild tha
 
 The **Ingest** view connects websites (multi-page crawls), single links, file uploads, REST/JSON APIs, SQL databases, MCP servers, RSS/sitemaps and server folders. Each source has a schema-driven form, a dry-run **Test connection**, access and schedule settings, and background jobs with live progress, per-item results and cancel. Requests pass an egress guard against SSRF, credentials are encrypted at rest, and SQL is read-only. Built-in demo targets (a wiki, a JSON API, an MCP server, a SQLite file and a folder) let you try every kind. See [docs/ingestion.md](docs/ingestion.md).
 
+## Agents
+
+The **Agents** view builds assistants with their own instructions, sources and tools, in three kinds: **Classic** (cited answers from chosen sources), **Agentic** (a tool loop over library search, calculator, web search, web pages, a Python sandbox with no network, files, tenant skills, REST APIs from OpenAPI specs, MCP servers and read-only SQL) and **Research** (sub-questions, each verified, merged into one cited report). An agent acts as the person asking. Every tool result is a citable passage, so agent answers get the same sentence-level verification. Actions that change data wait for approval, always so after the run has read outside content. Conversations are saved and can be shared without leaking: a viewer sees only answers whose sources they can open. Per-agent API keys work on `/api/agents/{id}/chat` and `/v1/chat/completions` (model `agent/<id>`). See [docs/agents.md](docs/agents.md).
+
 ## Configuration: tenant packs
 
 Each customer is a directory of YAML and Markdown. Platform defaults load first, then the vertical pack (`packs/verticals/railways`), then the tenant pack (`packs/tenants/railways-demo`). Later layers win.
@@ -113,9 +117,9 @@ evals/             golden.yaml, redteam.yaml
 
 ## Interfaces
 
-- **Web app** at `/`: Ask (streaming, evidence, verification, trace), Library (versions, diffs, supersession graph, "why can't X see this"), Watch, Skills (validators, drafts, maker-checker approval), Memory, Govern (audit chain, release gates, role simulator).
+- **Web app** at `/`: Ask (streaming, evidence, verification, trace), Agents (builder with live preview, chat with steps and approvals, tools, API keys), Library (versions, diffs, supersession graph, "why can't X see this"), Watch, Skills (validators, drafts, maker-checker approval), Memory, Govern (audit chain, release gates, role simulator).
 - **REST** under `/api`. OpenAPI docs are at `/api/docs`.
-- **OpenAI-compatible** `POST /v1/chat/completions` with model `smriti/<tenant>`. Any chat client or IDE plugs in, and the answer carries its sources.
+- **OpenAI-compatible** `POST /v1/chat/completions` with model `smriti/<tenant>`, or `agent/<id>` with an agent API key. Any chat client or IDE plugs in, and the answer carries its sources.
 - **MCP**: `smriti mcp --as <user>` exposes `search_knowledge`, `ask_question` and `get_document` with the caller's permissions fixed at start.
 - **CLI**: `seed`, `ingest`, `crawl`, `ask`, `eval`, `audit-verify`, `validate-pack`.
 
@@ -130,5 +134,6 @@ The GPU budget comes mostly from not calling the model. Lookups and table questi
 - OCR for scanned pages, Docling layout parsing and speech-to-text are plug-in points (`parsers.EXTERNAL_PARSERS`), not bundled. Scanned pages are flagged low-confidence and queued.
 - The 12 GB and 16 GB profiles are sized from documented model and KV-cache arithmetic and have not been run on those cards yet; run `smriti bench` after install and adjust `.env`.
 - Keycloak, OpenFGA and Temporal integrations are interfaces with local implementations. The adapters still need to be written against a live deployment.
+- Without a model, agentic agents use a rule planner (library search, links in the question, arithmetic). Connected tools (REST, MCP, SQL) are only called by a model. The tool loop has been tested against a scripted vLLM-compatible server, not yet a live Qwen3 on a GPU.
 - The offline extractive writer is faithful but terse. Fluent drafting needs a configured model, which is then held to the same verification.
 - Licences of any model you configure must be checked before shipping (see `models.licence_register`).

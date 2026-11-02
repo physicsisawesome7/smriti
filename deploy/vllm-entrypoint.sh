@@ -21,6 +21,10 @@ args=(
   --trust-remote-code
 )
 
+if [[ "${LLM_TOOL_PARSER:-hermes}" != "none" ]]; then
+  # agents: OpenAI-style function calling; Qwen3 emits Hermes-format tool calls
+  args+=(--enable-auto-tool-choice --tool-call-parser "${LLM_TOOL_PARSER:-hermes}")
+fi
 if [[ -n "${LLM_QUANTIZATION:-}" ]]; then
   args+=(--quantization "$LLM_QUANTIZATION")
 fi

@@ -86,6 +86,9 @@ The GPU profiles add LLM generation time on top. Measure them on your card with 
 | Serve the LAN | `SMRITI_BIND=0.0.0.0` and put a TLS reverse proxy in front |
 | Real logins | `SMRITI_AUTH=token` with `SMRITI_API_TOKENS`, behind your SSO proxy |
 | More API processes | `SMRITI_WORKERS=4` (stateless; Qdrant and Postgres are shared) |
+| Web search for agents | add `search` to `COMPOSE_PROFILES` and set `SMRITI_SEARXNG_URL=http://searxng:8080` (self-hosted SearxNG) |
+| Agents' Python sandbox | runs by default on an internal-only network. Tune `SANDBOX_MEMORY` and `SANDBOX_CPUS`; set `SMRITI_SANDBOX_URL=` (empty) to turn code execution off |
+| Tool calling off | `LLM_TOOL_PARSER=none` (agentic agents then use the rule planner) |
 
 Packs are mounted read-only from `./packs`. After editing them, run `docker compose restart smriti-api smriti-worker`.
 

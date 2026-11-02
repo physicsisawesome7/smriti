@@ -12,6 +12,7 @@ rows rather than written by the model.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 import uuid
@@ -117,8 +118,9 @@ def ask(
     history: list[dict[str, str]] | None = None,
     use_cache: bool = True,
     skill_instructions: str | None = None,
+    doc_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    events = list(_prepare(t, p, question, as_of, history, skill_instructions, use_cache))
+    events = list(_prepare(t, p, question, as_of, history, skill_instructions, use_cache, doc_ids=doc_ids))
     return events[-1]["data"]
 
 
@@ -133,6 +135,7 @@ def ask_stream(t: Tenant, p: Principal, question: str, **kw: Any) -> Iterator[di
         kw.get("skill_instructions"),
         kw.get("use_cache", True),
         stream=True,
+        doc_ids=kw.get("doc_ids"),
     )
 
 
@@ -145,7 +148,9 @@ def _prepare(
     skill: str | None,
     use_cache: bool,
     stream: bool = False,
+    doc_ids: list[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
+    """``doc_ids`` narrows retrieval to an agent's sources (never widens access)."""
     t0 = time.perf_counter()
     trace_id = uuid.uuid4().hex[:16]
     question = question.strip()
@@ -183,7 +188,8 @@ def _prepare(
         return
 
     gen = t.pack.config.generation
-    key = f"{p.access_key}|{t.generation}|{as_of}|{skill or ''}"
+    scope = hashlib.sha256("|".join(sorted(doc_ids)).encode()).hexdigest()[:12] if doc_ids is not None else ""
+    key = f"{p.access_key}|{t.generation}|{as_of}|{skill or ''}|{scope}"
     te = time.perf_counter()
     qvec = t.query_vector(question)  # computed once: used by the cache and by retrieval
     embed_ms = round((time.perf_counter() - te) * 1000, 1)
@@ -206,7 +212,9 @@ def _prepare(
         return
 
     include_sup = route == "compare"
-    passages, rtrace = t.retrieve(p, question, as_of=as_of, include_superseded=include_sup, qvec=qvec)
+    passages, rtrace = t.retrieve(
+        p, question, as_of=as_of, include_superseded=include_sup, qvec=qvec, doc_ids=_scope_ids(doc_ids)
+    )
     for ps in passages:
         if ps.injection_flag:
             events.append(
@@ -396,9 +404,12 @@ def _prepare(
     yield {"event": "final", "data": res}
 
 
-def _prompt_version(t: Tenant) -> str:
-    import hashlib
+def _scope_ids(doc_ids: list[str] | None) -> list[str] | None:
+    # an empty selection means no documents, not "no filter"
+    return None if doc_ids is None else (doc_ids or ["~no-documents~"])
 
+
+def _prompt_version(t: Tenant) -> str:
     from .llm import PLATFORM_RULES
 
     return hashlib.sha256((PLATFORM_RULES + t.pack.config.policy).encode()).hexdigest()[:10]

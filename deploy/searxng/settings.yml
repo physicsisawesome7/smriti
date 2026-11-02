@@ -1,0 +1,12 @@
+# SearxNG for Smriti agents: JSON API on the internal network, no tracking.
+# The secret comes from SEARXNG_SECRET in .env.
+use_default_settings: true
+server:
+  limiter: false          # only Smriti calls it, from inside the compose network
+  image_proxy: false
+  public_instance: false
+search:
+  safe_search: 1
+  formats: [html, json]
+outgoing:
+  request_timeout: 4.0

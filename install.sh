@@ -94,6 +94,7 @@ else
       END { for (i=1;i<=n;i++) print seen[order[i]] }'
     echo "TEI_IMAGE=ghcr.io/huggingface/text-embeddings-inference:${TEI_TAG}"
     echo "POSTGRES_PASSWORD=${PG_PASS}"
+    echo "SEARXNG_SECRET=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
   } > .env
   say "wrote .env for profile '$PROFILE'"
 fi

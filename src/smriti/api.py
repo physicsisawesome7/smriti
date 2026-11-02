@@ -27,8 +27,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, connectors, demo, evals, memory, skills, watch
+from . import __version__, agents, connectors, demo, evals, memory, skills, watch
 from .access import UnknownUser, evaluate
+from .agents import api as agents_api
+from .agents import runtime as agents_rt
 from .ask import ask, ask_stream
 from .config import Settings, load_pack
 from .connectors.files import EXTRA_ROOTS as folder_roots_registry
@@ -112,7 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Single-box mode runs schedules and ingestion jobs in this process; in Docker
         # the worker container does (SMRITI_SCHEDULER=0 on the API).
         if settings.scheduler:
-            plat.scheduler = watch.Scheduler(plat.tenants)
+            plat.scheduler = watch.Scheduler(plat.tenants, plat.box)
             plat.scheduler.start()
             plat.jobs = connectors.JobRunner(plat.tenants, plat.box)
             plat.jobs.start()
@@ -145,6 +147,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> tuple[Tenant, Principal]:
         t = plat.tenant(x_smriti_tenant or request.query_params.get("tenant"))
         user = None
+        if (authorization or "").removeprefix("Bearer ").strip().startswith(agents.KEY_PREFIX):
+            raise HTTPException(403, "agent API keys work only on /api/agents/{id}/chat and /v1/chat/completions")
         if settings.auth_mode == "token":
             tok = (authorization or "").removeprefix("Bearer ").strip()
             user = settings.api_tokens.get(tok)
@@ -890,14 +894,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "hidden": hidden,
         }
 
+    key_or_user = agents_api.mount(app, plat, ctx, need)
+
     # ------------------------------------------------------------ OpenAI-compatible
 
     @app.get("/v1/models")
-    def v1_models() -> dict[str, Any]:
-        return {
-            "object": "list",
-            "data": [{"id": f"smriti/{tid}", "object": "model", "owned_by": "safearly"} for tid in plat.tenants],
-        }
+    def v1_models(request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        data = [{"id": f"smriti/{tid}", "object": "model", "owned_by": "safearly"} for tid in plat.tenants]
+        tok = (authorization or "").removeprefix("Bearer ").strip()
+        if tok.startswith(agents.KEY_PREFIX):
+            _, _, k = key_or_user(request, authorization, None, None)
+            data = [{"id": f"agent/{k['agent_id']}", "object": "model", "owned_by": "safearly"}]
+        return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions")
     def v1_chat(
@@ -908,13 +916,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Any:
         model = str(body.get("model") or "")
         tid = model.split("/", 1)[1] if model.startswith("smriti/") else None
-        t, p = ctx(request, x_smriti_user, tid, authorization)
         msgs = body.get("messages") or []
         question = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
         if isinstance(question, list):
             question = " ".join(x.get("text", "") for x in question if isinstance(x, dict))
         history = [m for m in msgs[:-1] if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)]
-        res = ask(t, p, question, history=history or None)
+        tok = (authorization or "").removeprefix("Bearer ").strip()
+        if model.startswith("agent/") or tok.startswith(agents.KEY_PREFIX):
+            t, p, k = key_or_user(request, authorization, x_smriti_user, None)
+            agent_id = k["agent_id"] if k else model.split("/", 1)[1]
+            if k and model.startswith("agent/") and model != f"agent/{agent_id}":
+                raise HTTPException(403, "this API key is for another agent")
+            try:
+                agent = agents_rt.agent_for(t, p, agent_id)
+            except (KeyError, PermissionError) as e:
+                raise HTTPException(404, str(e)) from None
+            res = agents_rt.run_sync(agents_rt.chat(t, p, plat.box, agent, question, trigger="api", keep=False))
+            if res.get("status") == "awaiting_approval":
+                a = res["approval"]
+                res = {
+                    **res,
+                    "answer": f"Approval needed: {a['tool']} wants to run {a['action']}. Approve run {a['run_id']} at POST /api/runs/{a['run_id']}/approve?approve=true",
+                    "citations": [],
+                    "abstained": True,
+                    "verification": {},
+                    "trace_id": a["run_id"],
+                }
+            res.setdefault("trace_id", res.get("run_id"))
+        else:
+            t, p = ctx(request, x_smriti_user, tid, authorization)
+            res = ask(t, p, question, history=history or None)
         content = res["answer"]
         if res["citations"]:
             content += "\n\nSources:\n" + "\n".join(

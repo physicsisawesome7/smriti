@@ -278,12 +278,19 @@ def mount(app: FastAPI) -> Any:
             reader_for(title, text)
         )
 
-    @srv.tool()
+    from mcp import types as mcp_types
+
+    @srv.tool(annotations=mcp_types.ToolAnnotations(read_only_hint=True))
     def search_handover(query: str) -> str:
         """Search the handover notes; returns matching notes."""
         q = query.lower()
         hits = [f"## {t}\n{x}" for t, x in HANDOVER.values() if any(w in (t + x).lower() for w in q.split())]
         return "\n\n".join(hits) or "No matching notes."
+
+    @srv.tool()
+    def request_handover_meeting(officer: str, topic: str) -> str:
+        """Ask a retiring officer for a handover meeting on a topic (demo: nothing is sent)."""
+        return f"Meeting request recorded for {officer} on '{topic}'. Reference HM-{abs(hash((officer, topic))) % 10000:04d} (demo)."
 
     # Keep the SDK's DNS-rebinding protection, but accept Smriti's own configured
     # hostname as well as localhost (in Docker the worker calls http://smriti-api:8000).

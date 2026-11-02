@@ -16,6 +16,7 @@ documents declare name-bearing columns and labels in their schema.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterable
 
 from saaf import Saaf
@@ -106,3 +107,23 @@ class ConversationMasker:
 
     def restore(self, text: str) -> str:
         return self.saaf.restore(text).text
+
+    def export(self) -> list[list[str]]:
+        """The token map, so an agent run paused for approval can resume in another process."""
+        try:
+            return [[e, orig, tok] for (e, orig), tok in self.saaf.vault._by_key.items()]
+        except AttributeError:
+            return []
+
+    def load(self, entries: list[list[str]]) -> None:
+        v = self.saaf.vault
+        try:
+            from saaf.vault import VaultEntry
+
+            for e, orig, tok in entries:
+                v._by_key[(e, orig)] = tok
+                v._by_token[tok] = (VaultEntry(token=tok, entity=e, original=orig, created=time.time()), orig)
+                n = int(re.search(r"_(\d+)\]$", tok).group(1)) if re.search(r"_(\d+)\]$", tok) else 0  # type: ignore[union-attr]
+                v._counters[e] = max(v._counters.get(e, 0), n)
+        except (AttributeError, ImportError, TypeError):
+            pass  # restore then leaves tokens in place: safe, only less readable
