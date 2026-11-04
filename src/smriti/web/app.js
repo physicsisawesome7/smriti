@@ -34,6 +34,15 @@ function toast(msg, ms = 3200) {
 
 async function loadMe() {
   S.me = await api("/api/whoami");
+  let demo = $("#demoBanner");
+  if (S.me.demo && !demo) {
+    demo = document.createElement("div");
+    demo.id = "demoBanner";
+    demo.className = "banner mark";
+    demo.style.cssText = "margin:0;border-radius:0;text-align:center";
+    demo.textContent = "Demo mode: anyone can pick who they are. Only use it on this computer, never on a network.";
+    document.body.prepend(demo);
+  }
   S.user = S.me.user.id;
   store("smriti.user", S.user);
   $("#tenantName").textContent = S.me.tenant.name;
@@ -343,7 +352,7 @@ async function openDoc(id) {
 /* ------------------------------------------------------------ watch */
 
 async function viewWatch() {
-  const [sources, alerts] = await Promise.all([api("/api/sources"), api("/api/alerts")]);
+  const [sources, alerts] = await Promise.all([api("/api/sources").catch(() => []), api("/api/alerts")]);
   const op = can("curate") || can("administer");
   $("#view").innerHTML = `
     <div class="eyebrow">Watch</div>
@@ -465,7 +474,7 @@ function skillResult(r) {
   return `<div style="margin-top:14px">
     <div class="row">${["critical", "major", "minor", "info", "pass"].filter((k) => sm[k]).map((k) => pill(`${sm[k]} ${k}`, k)).join(" ")}<span class="spacer"></span><span class="mono muted">${r.elapsed_ms} ms</span></div>
     <div class="tablewrap" style="margin-top:10px"><table class="t"><thead><tr><th>Check</th><th>Result</th><th>Finding</th><th>Source</th></tr></thead><tbody>
-      ${r.findings.map((f) => `<tr><td class="mono">${esc(f.check)}</td><td>${pill(f.severity)}</td><td>${esc(f.message)}</td><td>${f.citation ? `<a href="#" onclick="openDoc('${esc(f.citation.doc_id)}');return false">${esc(f.citation.title)}</a>${f.citation.clause_id ? ` <span class="mono muted">cl. ${esc(f.citation.clause_id)}</span>` : ""}` : ""}</td></tr>`).join("")}
+      ${r.findings.map((f) => `<tr><td class="mono">${esc(f.check)}</td><td>${pill(f.severity)}</td><td>${esc(f.message)}</td><td>${f.citation ? `<a href="#" data-open-doc="${esc(f.citation.doc_id)}">${esc(f.citation.title)}</a>${f.citation.clause_id ? ` <span class="mono muted">cl. ${esc(f.citation.clause_id)}</span>` : ""}` : ""}</td></tr>`).join("")}
     </tbody></table></div>
     ${Object.keys(r.fields || {}).length ? `<h3>Extracted fields</h3><pre class="json">${esc(JSON.stringify(r.fields, null, 2))}</pre>` : ""}
     ${r.extra?.redlines?.length ? `<h3>Proposed redlines</h3>${r.extra.redlines.map((x) => `<div class="card" style="margin-bottom:8px"><div class="mono muted">Clause ${esc(x.clause)} · ${esc(x.base_document)}</div><div class="redline" style="margin-top:6px">${redline(x.redline)}</div></div>`).join("")}` : ""}
@@ -532,9 +541,9 @@ async function viewMemory() {
 /* ------------------------------------------------------------ govern */
 
 async function viewGovern() {
-  const policy = await api("/api/policy");
-  const audit = can("audit") || can("administer") ? await api("/api/audit?limit=60") : null;
   const ops = can("administer") || can("curate") || can("audit");
+  const policy = ops ? await api("/api/policy") : null;
+  const audit = can("audit") || can("administer") ? await api("/api/audit?limit=60") : null;
   $("#view").innerHTML = `
     <div class="eyebrow">Govern</div>
     <h1>Audit, evaluation and policy</h1>
@@ -551,12 +560,12 @@ async function viewGovern() {
         ${ops ? `<div class="card"><h2>Role simulator</h2><p class="muted" style="margin-top:0">See what someone would retrieve, and why other documents are hidden from them.</p>
           <div class="row"><select id="simUser">${S.me.directory.map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("")}</select><input type="text" id="simQ" value="performance guarantee" style="flex:1"><button class="btn sm" id="simBtn">Simulate</button></div><div id="simOut" style="margin-top:10px"></div></div>` : ""}
       </div>
-      <div class="stack">
+      ${policy ? `<div class="stack">
         <div class="card"><h2>Models</h2><dl class="kv">${Object.entries(policy.models.routes).map(([k, v]) => `<dt>${esc(k)}</dt><dd class="mono">${esc(v)}</dd>`).join("")}<dt>bundle</dt><dd>${esc(policy.models.bundle)}</dd><dt>external API</dt><dd>${policy.models.byo_api_fallback ? "allowed as fallback" : "disabled (sovereign)"}</dd></dl></div>
         <div class="card"><h2>Pack layers</h2><div class="row">${policy.pack_layers.map((l) => `<span class="chip v">${esc(l)}</span>`).join('<span class="muted">→</span>')}</div></div>
         <div class="card"><h2>Guardrail policy</h2><pre class="json">${esc(JSON.stringify(policy.guardrails, null, 2))}</pre></div>
         <div class="card"><h2>Roles</h2><pre class="json">${esc(JSON.stringify(policy.roles, null, 2))}</pre></div>
-      </div>
+      </div>` : `<div class="empty">Model, guardrail and role configuration needs the curate, audit or administer grant.</div>`}
     </div>`;
   $$("[data-ev]").forEach((b) => (b.onclick = async () => {
     const out = $("#evOut");
@@ -598,6 +607,10 @@ function evalResult(kind, r) {
 /* ------------------------------------------------------------ boot */
 
 $$("#nav a").forEach((a) => (a.onclick = () => go(a.dataset.view)));
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-open-doc]");
+  if (a) { e.preventDefault(); openDoc(a.dataset.openDoc); }
+});
 $("#userSel").onchange = async (e) => {
   S.user = e.target.value;
   S.turns = []; S.sel = null;

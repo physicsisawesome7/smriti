@@ -37,7 +37,7 @@ import httpx
 
 from .agents import can_edit, can_use, get_row, view
 from .agents import runtime as rt
-from .models import Principal, class_rank
+from .models import DOC_CLASSES, Principal, class_rank
 from .privacy import mask_text
 from .store import channel_threads, channels
 
@@ -128,6 +128,9 @@ def save(t: Any, p: Principal, box: Any, body: dict[str, Any], cid: str | None =
     allowed = ("fixed", "signed") if kind == "widget" else ("fixed", "mapped")
     if cfg["identity"] not in allowed:
         raise ChannelError(f"identity must be one of {', '.join(allowed)} for a {kind} channel")
+    if cfg["max_class"].lower() not in DOC_CLASSES:
+        raise ChannelError(f"max_class must be one of {', '.join(DOC_CLASSES)}")
+    cfg["max_class"] = cfg["max_class"].lower()
     if kind == "widget":
         origins = [str(o).strip().rstrip("/") for o in body.get("origins", prev.get("origins", [])) if str(o).strip()]
         for o in origins:
@@ -135,6 +138,11 @@ def save(t: Any, p: Principal, box: Any, body: dict[str, Any], cid: str | None =
                 raise ChannelError(f"'{o}' is not an origin like https://intranet.example.org")
         if not origins:
             raise ChannelError("list at least one site origin the widget may run on")
+        if cfg["identity"] == "fixed" and cfg["max_class"] != "public":
+            # anyone who can load the host page (or fake its Origin header) uses a fixed widget
+            raise ChannelError(
+                "a widget without signed-in users can only show public material; set max_class to public"
+            )
         cfg |= {
             "origins": origins,
             "title": str(body.get("title", prev.get("title", agent["name"])))[:80],
@@ -263,7 +271,7 @@ def principal_for(t: Any, row: dict[str, Any], external_user: str | None = None,
 
 
 def agent_for(t: Any, row: dict[str, Any]) -> dict[str, Any]:
-    agent = view(get_row(t, row["agent_id"]))
+    agent = rt.with_owner_rights(t, view(get_row(t, row["agent_id"])))
     if agent["status"] != "published":
         raise PermissionError("the agent behind this channel is not published")
     return agent
@@ -332,7 +340,7 @@ def reply_text(t: Any, row: dict[str, Any], r: dict[str, Any], base_url: str) ->
         a = r["approval"]
         args = ", ".join(f"{k}={v}" for k, v in (a.get("arguments") or {}).items())
         return f"Approval needed: {a.get('tool')} wants to run {a.get('action')}{f' ({args})' if args else ''}. {a.get('description') or ''}".strip()
-    marking = r.get("marking")
+    marking = top_class(r)
     limit = cfg.get("max_class", "internal")
     if marking and class_rank(marking) > class_rank(limit):
         t.audit.record(row["acts_as"], "channel_withheld", channel_id=row["id"], marking=marking)
@@ -355,6 +363,68 @@ def reply_text(t: Any, row: dict[str, Any], r: dict[str, Any], base_url: str) ->
     if len(answer) > cap:
         answer = answer[: cap - 80].rsplit(" ", 1)[0] + f" …\n\nFull answer in Smriti: {link}"
     return answer
+
+
+def top_class(r: dict[str, Any]) -> str | None:
+    """The most restricted class among an answer's citations (and its marking)."""
+    classes = [c.get("doc_class") for c in r.get("citations") or [] if c.get("doc_class")]
+    if r.get("marking"):
+        classes.append(r["marking"])
+    return max(classes, key=class_rank) if classes else None
+
+
+def widget_events(t: Any, row: dict[str, Any], events: Any) -> Any:
+    """What a website widget may see of a run: verified final answers only.
+
+    Tokens, tool steps, passages and traces never leave Smriti through a widget.
+    The answer goes through the same class limit and PII masking as chat apps."""
+    cfg = json.loads(row["config"])
+    limit = cfg.get("max_class", "public")
+    for ev in events:
+        kind, d = ev["event"], ev["data"]
+        if kind == "start":
+            yield ev
+        elif kind == "step":
+            yield {"event": "step", "data": {"type": d.get("type")}}
+        elif kind == "approval":
+            yield {
+                "event": "approval",
+                "data": {k: d.get(k) for k in ("run_id", "tool", "action", "description")}
+                | ({"arguments": d.get("arguments")} if cfg.get("identity") == "signed" else {}),
+            }
+        elif kind == "final":
+            top = top_class(d)
+            if top and class_rank(top) > class_rank(limit):
+                t.audit.record(row["acts_as"], "channel_withheld", channel_id=row["id"], marking=top)
+                yield {
+                    "event": "final",
+                    "data": {
+                        "answer": "This answer cites material that can't be shown here. Open Smriti to read it.",
+                        "citations": [],
+                        "abstained": True,
+                        "conversation_id": d.get("conversation_id"),
+                    },
+                }
+                continue
+            answer = d.get("answer") or ""
+            if cfg.get("mask_pii", True):
+                answer, _ = mask_text(answer)
+            yield {
+                "event": "final",
+                "data": {
+                    "answer": answer,
+                    "abstained": d.get("abstained"),
+                    "conversation_id": d.get("conversation_id"),
+                    "notice": d.get("notice"),
+                    "citations": [
+                        {k: c.get(k) for k in ("n", "title", "section", "ref_no")}
+                        | ({"text": c.get("text")} if cfg.get("identity") == "signed" else {})
+                        for c in d.get("citations") or []
+                    ],
+                },
+            }
+        elif kind == "error":
+            yield ev
 
 
 # ---------------------------------------------------------------- widget

@@ -83,8 +83,10 @@ The GPU profiles add LLM generation time on top. Measure them on your card with 
 | Ingest a shared drive | put or mount it under `./imports` (or set `SMRITI_IMPORTS_DIR`), then add a *Server folder* source for `/imports/...` |
 | Crawl intranet hosts only | `SMRITI_EGRESS_ALLOW_PRIVATE=1` (default). Add exceptions with `SMRITI_EGRESS_ALLOWLIST=host,10.0.0.0/8` |
 | Your own documents and roles | copy `packs/tenants/railways-demo` to `packs/tenants/<you>`, edit the YAML, set `SMRITI_PACKS=/app/packs/tenants/<you>` |
-| Serve the LAN | `SMRITI_BIND=0.0.0.0` and put a TLS reverse proxy in front |
-| Real logins | `SMRITI_AUTH=token` with `SMRITI_API_TOKENS`, behind your SSO proxy |
+| Serve the LAN | `SMRITI_BIND=0.0.0.0`, `SMRITI_AUTH=token` (demo auth is refused off loopback), and a TLS reverse proxy in front |
+| Real logins | `SMRITI_AUTH=token` with `SMRITI_API_TOKENS=token:user` or `token:tenant:user`, behind your SSO proxy |
+| Prometheus | `SMRITI_METRICS_TOKEN=...`, then scrape `/api/metrics` with that bearer token |
+| Malware scanning | `SMRITI_CLAMD=host:3310`; a scan that cannot vouch for a file rejects it (`SMRITI_MALWARE_FAIL_OPEN=1` to override) |
 | More API processes | `SMRITI_WORKERS=4` (stateless; Qdrant and Postgres are shared) |
 | Web search for agents | add `search` to `COMPOSE_PROFILES` and set `SMRITI_SEARXNG_URL=http://searxng:8080` (self-hosted SearxNG) |
 | Agents' Python sandbox | runs by default on an internal-only network. Tune `SANDBOX_MEMORY` and `SANDBOX_CPUS`; set `SMRITI_SANDBOX_URL=` (empty) to turn code execution off |

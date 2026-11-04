@@ -71,6 +71,19 @@ SECRET_PATTERNS = [
 ]
 
 NUMBER = re.compile(r"(?<![\w.])(?:₹\s?|Rs\.?\s?)?\d[\d,]*(?:\.\d+)?\s?%?")
+# Words that flip a sentence's meaning. Stopword lists drop them, so the verifier checks them separately:
+# "shall not exceed" must never count as supported by "shall exceed".
+NEGATION = re.compile(
+    r"\b(?:not|never|none|nor|without|except|cannot|neither|nil|unless)\b|\bno\b(?!\.?\s*\d)|n't\b|नहीं|बिना|मत|(?<![ऀ-ॿ])न(?![ऀ-ॿ])",
+    re.I,
+)
+DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+
+def negated(text: str) -> bool:
+    return bool(NEGATION.search(text or ""))
+
+
 CITE = re.compile(r"\[(\d{1,2})\]")
 
 
@@ -199,18 +212,20 @@ class Guardrails:
             support = sum(1 for t in btoks if t in stoks) / len(btoks) if btoks and cites else 0.0
             nums_bad = []
             if out.get("numeric_check", {}).get("recompute", True) and cites:
-                src_nums = {_norm_num(n) for n in NUMBER.findall(src)}
-                for n in NUMBER.findall(body):
+                src_nums = {_norm_num(n) for n in NUMBER.findall(src.translate(DEVANAGARI_DIGITS))}
+                for n in NUMBER.findall(body.translate(DEVANAGARI_DIGITS)):
                     nn = _norm_num(n)
                     if nn and nn not in src_nums:
                         nums_bad.append(n.strip())
-            ok = bool(cites) and support >= 0.5 and not nums_bad
+            polarity_ok = _polarity_matches(body, [by_n[c].text for c in cites]) if cites else True
+            ok = bool(cites) and support >= 0.5 and not nums_bad and polarity_ok
             rows.append(
                 {
                     "sentence": body[:240],
                     "citations": cites,
                     "support": round(support, 2),
                     "numbers_not_in_source": nums_bad,
+                    "polarity_ok": polarity_ok,
                     "supported": ok,
                 }
             )
@@ -224,6 +239,23 @@ class Guardrails:
             "citation_ok": len(cited_all) >= min_cites,
             "threshold": float(out.get("faithfulness", {}).get("min_score", 0.6)),
         }
+
+
+def _polarity_matches(sentence: str, sources: list[str]) -> bool:
+    """The source sentence closest to ``sentence`` must agree with it on negation."""
+    words = set(tokenize(sentence))
+    if not words:
+        return True
+    best, best_overlap = None, 0.0
+    for src in sources:
+        for s in split_sentences(src or ""):
+            ov = len(words & set(tokenize(s))) / len(words)
+            if ov > best_overlap:
+                best, best_overlap = s, ov
+    if best is None or best_overlap < 0.6:
+        # no clearly matching source sentence: a negative claim still needs a negative source
+        return not negated(sentence) or any(negated(src or "") for src in sources)
+    return negated(best) == negated(sentence)
 
 
 def _norm_num(s: str) -> str:

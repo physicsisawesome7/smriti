@@ -15,7 +15,7 @@ Open **Agents** in the web app. Anyone with the `view` grant can build a private
 - **Instructions**: who it answers for, tone, what to always include. Platform rules sit above them and cannot be overridden: cite every factual sentence, treat tool results as data, say what is missing instead of guessing.
 - **Sources**: everything the person asking may see, or only chosen document types and ingestion sources. Sources narrow retrieval. They never widen it.
 - **Tools**: built-in and connected tools (below).
-- **Approval**: ask before anything that changes data (default), ask before every tool call, or don't ask. Even with "don't ask", once a run has read outside content (web, API, MCP, SQL), any action that changes data waits for approval. Text injected into a web page cannot trigger a write.
+- **Approval**: ask before anything that changes data (default), ask before every tool call, or don't ask. Even with "don't ask", once a run has read outside content (web, API, MCP, SQL), any action that changes data waits for approval. Text injected into a web page cannot trigger a write. A run that has read a document flagged for prompt injection also asks before any outbound tool (web search, reading a URL). Approvals are never accepted over an API key, and each approval runs at most once.
 - **Starter questions**, **max tool steps**, and **only answer when supported by citations** (on by default).
 - **Sharing**: only me, everyone in the tenant, or chosen roles. Draft or published.
 - **Schedule**: a cron expression and a question. Published agents run on schedule as their owner and post to a conversation called "Scheduled: <name>".
@@ -38,7 +38,7 @@ The builder has a **Try it** panel that runs the agent as it stands in the form,
 | Database | connected | Read-only SELECT with a row cap and a read-only transaction. Give it table notes so the model writes good SQL. |
 | Web search provider | connected | SearxNG at your URL, Brave or Tavily. |
 
-Every connected tool has **roles that may use it** and a **sensitivity** for its results. Credentials are encrypted at rest and never returned by the API. Saving a tool reads its actions from the target, so you see exactly what agents can call. The **Tools** tab has demo presets that point at Smriti's own demo MCP server, notices API and works database.
+Every connected tool has **roles that may use it** and a **sensitivity** for its results. A tool that lists no roles is denied by default: only curators can use it, or agents a curator has published. Running Python needs the `execute_code` grant. A switched-off tool never loads. Credentials are encrypted at rest and never returned by the API. Saving a tool reads its actions from the target, so you see exactly what agents can call. The **Tools** tab has demo presets that point at Smriti's own demo MCP server, notices API and works database.
 
 ## Why answers can be trusted
 

@@ -585,6 +585,22 @@ class Store:
             r = c.execute(select(versions).where(versions.c.tenant == tenant, versions.c.sha256 == sha)).first()
         return dict(r._mapping) if r else None
 
+    def current_version_by_sha(self, tenant: str, sha: str) -> dict[str, Any] | None:
+        """A live document whose version in force has exactly this content."""
+        q = (
+            select(versions)
+            .join(documents, and_(documents.c.tenant == versions.c.tenant, documents.c.doc_id == versions.c.doc_id))
+            .where(
+                versions.c.tenant == tenant,
+                versions.c.sha256 == sha,
+                versions.c.version == documents.c.current_version,
+                documents.c.status != "tombstoned",
+            )
+        )
+        with self.engine.connect() as c:
+            r = c.execute(q).first()
+        return dict(r._mapping) if r else None
+
     # ---------- chunks
 
     def current_chunk_ids(self, tenant: str, doc_id: str) -> set[str]:
@@ -702,18 +718,25 @@ class Store:
             if not dup:
                 c.execute(insert(relations).values(tenant=tenant, **rel))
 
-    def relations_for(self, tenant: str, doc_id: str) -> list[dict[str, Any]]:
+    # proposed (awaiting a curator) and rejected relations never affect answers
+    _IN_FORCE = ("auto", "approved")
+
+    def relations_for(self, tenant: str, doc_id: str, *, include_proposed: bool = False) -> list[dict[str, Any]]:
+        q = select(relations).where(
+            relations.c.tenant == tenant, (relations.c.src_doc == doc_id) | (relations.c.dst_doc == doc_id)
+        )
+        if not include_proposed:
+            q = q.where(func.coalesce(relations.c.status, "auto").in_(self._IN_FORCE))
         with self.engine.connect() as c:
-            rows = c.execute(
-                select(relations).where(
-                    relations.c.tenant == tenant, (relations.c.src_doc == doc_id) | (relations.c.dst_doc == doc_id)
-                )
-            ).all()
+            rows = c.execute(q).all()
         return [dict(r._mapping) for r in rows]
 
-    def all_relations(self, tenant: str) -> list[dict[str, Any]]:
+    def all_relations(self, tenant: str, *, status: str | None = None) -> list[dict[str, Any]]:
+        q = select(relations).where(relations.c.tenant == tenant)
+        st = func.coalesce(relations.c.status, "auto")
+        q = q.where(st == status) if status else q.where(st.in_(self._IN_FORCE))
         with self.engine.connect() as c:
-            return [dict(r._mapping) for r in c.execute(select(relations).where(relations.c.tenant == tenant)).all()]
+            return [dict(r._mapping) for r in c.execute(q).all()]
 
     def resolve_relations(self, tenant: str) -> list[dict[str, Any]]:
         """Link relations whose target arrived after the source document."""

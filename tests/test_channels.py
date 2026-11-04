@@ -74,7 +74,7 @@ def test_channel_rules(fresh_app):  # type: ignore[no-untyped-def]
     assert "missing bot_token" in _channel(c, kind="telegram", agent_id=a["id"]).text
     mapped = _channel(c, kind="telegram", agent_id=a["id"], bot_token="t", identity="mapped", users={"1": "asha"})
     assert mapped.status_code == 403  # mapping identities is an administrator's job
-    w = _channel(c, kind="widget", agent_id=a["id"], origins=[SITE]).json()
+    w = _channel(c, kind="widget", agent_id=a["id"], origins=[SITE], max_class="public").json()
     assert w["id"].startswith("wg_") and 'data-smriti-widget="' + w["id"] in w["embed"]
     assert "signing_key" not in json.dumps(w)
     tg = _channel(c, kind="telegram", agent_id=a["id"], bot_token="123:SECRET").json()
@@ -88,7 +88,11 @@ def test_channel_rules(fresh_app):  # type: ignore[no-untyped-def]
 def test_widget_checks_origin_and_answers_with_citations(fresh_app):  # type: ignore[no-untyped-def]
     c = TestClient(fresh_app)
     a = _desk(c, starters=["Performance guarantee period?"])
-    w = _channel(c, kind="widget", agent_id=a["id"], origins=[SITE], title="Ask the tender desk").json()
+    fixed = _channel(c, kind="widget", agent_id=a["id"], origins=[SITE])
+    assert fixed.status_code == 400 and "public" in fixed.text  # an anonymous widget is public-only
+    w = _channel(
+        c, kind="widget", agent_id=a["id"], origins=[SITE], title="Ask the tender desk", max_class="public"
+    ).json()
     assert c.get("/widget.js").headers["content-type"].startswith("text/javascript")
     assert c.get(f"/api/widget/{w['id']}/config", headers={"Origin": "https://evil.example"}).status_code == 403
     pre = c.options(f"/api/widget/{w['id']}/chat", headers={"Origin": SITE})
@@ -107,7 +111,7 @@ def test_widget_checks_origin_and_answers_with_citations(fresh_app):  # type: ig
 def test_signed_widget_acts_as_the_signed_in_user(fresh_app):  # type: ignore[no-untyped-def]
     c = TestClient(fresh_app)
     a = _desk(c, name="Land desk", kind="classic")
-    w = _channel(c, kind="widget", agent_id=a["id"], origins=[SITE], identity="signed").json()
+    w = _channel(c, kind="widget", agent_id=a["id"], origins=[SITE], identity="signed", max_class="confidential").json()
     key = c.get(f"/api/channels/{w['id']}/signing-key", headers=KM).json()["signing_key"]
     assert c.get(f"/api/channels/{w['id']}/signing-key", headers={"X-Smriti-User": "asha"}).status_code == 403
     url = f"/api/widget/{w['id']}/chat"

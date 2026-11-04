@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import socket
 import struct
@@ -47,10 +48,13 @@ from .metadata import extract, front_matter
 from .models import Access, Passage, Principal
 from .parsers import parse, sniff
 from .privacy import mask_table, mask_text
-from .store import BlobStore, Store, memories, text_hash
+from .store import BlobStore, Store, memories, relations, text_hash
 
 MAX_FILE_MB = 100
 ZIP_DEPTH = 2
+ZIP_MAX_ENTRIES = 2000
+ZIP_MAX_TOTAL_MB = 1024
+ZIP_MAX_RATIO = 100
 
 
 class Tenant:
@@ -210,14 +214,49 @@ class Tenant:
         hints: dict[str, Any] | None = None,
         doc_id: str | None = None,
         legal_status: str | None = None,
+        trust: str = "content",
+        apply_relations: bool | None = None,
         _depth: int = 0,
     ) -> dict[str, Any]:
+        """Parse, version, mask, index and link one file.
+
+        ``trust`` says how far the file itself may decide things about the library:
+
+        * ``pack``: tenant packs, seeding and memories. Front matter may set the
+          document id, access and supersession.
+        * ``curator``: an upload or connector run by someone with ``curate``.
+          The caller's access hints apply as given, an existing document may get a
+          new version, and supersession found in the text is applied.
+        * ``content`` (default): everything else. Front matter cannot set the id,
+          access or relations; a file can only become a new version of a document
+          its own uploader or source created; access on a new version only ever
+          tightens; supersession found in the text is proposed for a curator to
+          approve instead of retiring anything.
+        """
+        if trust not in TRUST_LEVELS:
+            raise ValueError(f"unknown trust level {trust!r}")
+        if apply_relations is None:
+            apply_relations = trust != "content"
         if len(data) > MAX_FILE_MB * 1024 * 1024:
             raise ValueError(f"{filename}: larger than {MAX_FILE_MB} MB")
         mime = sniff(data, filename)
         if mime == "application/zip":
-            return self._ingest_zip(data, filename, actor=actor, source=source, hints=hints, depth=_depth)
+            return self._ingest_zip(
+                data,
+                filename,
+                actor=actor,
+                source=source,
+                hints=hints,
+                depth=_depth,
+                trust=trust,
+                apply_relations=apply_relations,
+            )
         scan = scan_malware(data)
+        if scan.get("error"):
+            # a configured scanner that cannot vouch for the file is a failure, not a pass
+            self.audit.record(actor, "malware_scan_failed", filename=filename, error=str(scan["error"])[:300])
+            if os.environ.get("SMRITI_MALWARE_FAIL_OPEN") != "1":
+                raise ValueError(f"{filename}: malware scan failed ({scan['error']}); not ingested")
         if scan.get("infected"):
             self.audit.record(
                 actor, "ingest_rejected", filename=filename, reason="malware", signature=scan.get("signature")
@@ -226,7 +265,12 @@ class Tenant:
 
         with self._ingest_lock:
             sha = hashlib.sha256(data).hexdigest()
-            dup = self.store.version_by_sha(self.id, sha)
+            # only the version currently in force of a live document counts as a duplicate:
+            # reverting a policy to older text, or re-uploading a deleted file, is new content
+            dup = self.store.current_version_by_sha(self.id, sha)
+            if dup and ((self.store.get_document(self.id, dup["doc_id"]) or {}).get("meta") or {}).get("index_pending"):
+                self.reindex_document(dup["doc_id"], actor)
+                return {"status": "reindexed", "doc_id": dup["doc_id"], "version": dup["version"]}
             if dup:
                 tightened = self._tighten_access(dup["doc_id"], (hints or {}).get("access"), actor)
                 return {
@@ -237,6 +281,9 @@ class Tenant:
                 }
 
             fm = front_matter(data)
+            ignored = sorted(k for k in fm if k in PROTECTED_FRONT_MATTER) if trust != "pack" else []
+            if ignored:  # a file must not decide its own id, access or what it retires
+                fm = {k: v for k, v in fm.items() if k not in PROTECTED_FRONT_MATTER}
             merged: dict[str, Any] = {**(hints or {}), **fm}
             parsed = parse(data, filename)
             if parsed.parser == "email" and "correspondence" in self.pack.schemas:
@@ -246,15 +293,36 @@ class Tenant:
             # Only a declared reference names the document; a reference merely found in the
             # text (a letter quoting a tender number) must not turn it into a version of that tender.
             ref_declared = bool(merged.get("ref_no"))
+            named = bool(doc_id or merged.get("doc_id"))
             doc_id = (
                 doc_id
                 or merged.get("doc_id")
                 or _derive_doc_id(source, source_url, meta.get("ref_no") if ref_declared else None, filename)
             )
             existing = self.store.get_document(self.id, doc_id)
+            if existing and trust == "content" and not _may_version(existing, actor, source, named):
+                # a same-named file from someone else becomes its own document; the response
+                # is the same whether or not the colliding document is visible to the uploader
+                doc_id = f"{doc_id}-{sha[:10]}"[:128]
+                existing = self.store.get_document(self.id, doc_id)
             version = (existing["current_version"] + 1) if existing else 1
 
-            access = Access.from_dict(merged.get("access") or (existing["access"] if existing else None))
+            requested = merged.get("access")
+            loosened = False
+            if existing and requested and trust != "pack":
+                from .access import strictest
+
+                old = Access.from_dict(existing["access"])
+                new = Access.from_dict(requested)
+                if trust == "curator":
+                    access = new
+                    loosened = not _no_stricter(new, old)  # the curator removed a restriction
+                else:
+                    access = strictest([old.to_dict(), new.to_dict()])
+            else:
+                access = Access.from_dict(requested or (existing["access"] if existing else None))
+            if not doc_id_ok(doc_id):
+                raise ValueError(f"{filename}: invalid document id")
             schema = self.pack.schemas.get(meta["doc_type"], {})
             name_cols = schema.get("pii_columns") or None
 
@@ -265,6 +333,10 @@ class Tenant:
             from .chunking import chunk_document
 
             chunks, tables = chunk_document(doc_id, parsed, meta, mask_rows=mask_rows)
+            if not chunks:
+                parsed.warnings.append(
+                    "no text found: a scanned image, an empty file or a page rendered by JavaScript; nothing is searchable"
+                )
             pii: set[str] = set(access.pii)
             for c in chunks:
                 if c.kind in ("table", "table_rows"):
@@ -307,34 +379,16 @@ class Tenant:
                     "injection_blocks": injection_blocks,
                     "legal_status": legal_status or merged.get("legal_status") or "customer-owned",
                     "sha256": sha,
+                    "owner": ((existing or {}).get("meta") or {}).get("owner") or actor,
+                    "trust": trust,
+                    "ignored_front_matter": ignored,
                 },
             }
-            self.store.upsert_document(self.id, doc)
-            self.store.add_version(
-                self.id,
-                {
-                    "doc_id": doc_id,
-                    "version": version,
-                    "sha256": sha,
-                    "blob_key": raw_key,
-                    "parse_key": parse_key,
-                    "filename": filename,
-                    "mime": parsed.mime,
-                    "parser": parsed.parser,
-                    "effective_from": meta.get("effective_from"),
-                    "valid_until": meta.get("valid_until"),
-                    "pages": parsed.pages,
-                    "low_confidence": parsed.low_confidence,
-                    "warnings": json.dumps(parsed.warnings),
-                },
-            )
-
-            # incremental chunk update: only changed chunks are embedded
+            # Embed first: if the embedder is down, nothing has been written and a retry is clean.
             old_ids = self.store.current_chunk_ids(self.id, doc_id)
             new_by_id = {c.chunk_id: c for c in chunks}
             added = [c for cid, c in new_by_id.items() if cid not in old_ids]
             removed = old_ids - set(new_by_id)
-            self.store.close_chunks(self.id, removed, version - 1)
             rows = [
                 {
                     "chunk_id": c.chunk_id,
@@ -355,27 +409,61 @@ class Tenant:
                 }
                 for c in added
             ]
+            dict_rows = [r | {"section_path": json.loads(r["section_path"])} for r in rows]
+            texts = [self._index_text(r) for r in dict_rows]
+            vecs = self._embed(texts) if texts else None
+
+            self.store.upsert_document(self.id, doc)
+            self.store.add_version(
+                self.id,
+                {
+                    "doc_id": doc_id,
+                    "version": version,
+                    "sha256": sha,
+                    "blob_key": raw_key,
+                    "parse_key": parse_key,
+                    "filename": filename,
+                    "mime": parsed.mime,
+                    "parser": parsed.parser,
+                    "effective_from": meta.get("effective_from"),
+                    "valid_until": meta.get("valid_until"),
+                    "pages": parsed.pages,
+                    "low_confidence": parsed.low_confidence,
+                    "warnings": json.dumps(parsed.warnings),
+                },
+            )
+
+            self.store.close_chunks(self.id, removed, version - 1)
             self.store.insert_chunks(self.id, rows)
             for t in tables:
                 self.store.put_table(self.id, {**t, "version": version})
 
-            dict_rows = [r | {"section_path": json.loads(r["section_path"])} for r in rows]
-            texts = [self._index_text(r) for r in dict_rows]
-            if texts:
-                vecs = self._embed(texts)
-                self.index.upsert(
-                    [(r["chunk_id"], vecs[i], texts[i], self._payload(r, doc)) for i, r in enumerate(dict_rows)]
-                )
-            if removed:
-                self.index.set_payload(list(removed), {"current": False})
-            kept = [cid for cid in new_by_id if cid in old_ids]
-            if kept:
-                self.index.set_payload(
-                    kept, {"access": doc["access"], "doc_type": doc["doc_type"], "current": doc["status"] == "current"}
-                )
+            # The database now holds the version. If the vector store fails, the document is
+            # marked index_pending: a retry or the reconcile job finishes indexing it.
+            try:
+                if texts:
+                    self.index.upsert(
+                        [(r["chunk_id"], vecs[i], texts[i], self._payload(r, doc)) for i, r in enumerate(dict_rows)]
+                    )
+                if removed:
+                    self.index.set_payload(list(removed), {"current": False})
+                kept = [cid for cid in new_by_id if cid in old_ids]
+                if kept:
+                    self.index.set_payload(
+                        kept,
+                        {"access": doc["access"], "doc_type": doc["doc_type"], "current": doc["status"] == "current"},
+                    )
+            except Exception as e:
+                self._mark_index_pending(doc_id, True)
+                self.audit.record(actor, "index_failed", doc_id=doc_id, version=version, error=str(e)[:300])
+                raise RuntimeError(f"{filename}: stored, but indexing failed ({e}); it will be retried") from e
 
-            impact = self._apply_relations(doc_id, meta, actor)
+            impact = self._apply_relations(doc_id, meta, actor, "pack" if apply_relations else "content")
             self.bump_generation()
+        if loosened:
+            self.audit.record(actor, "access_changed", doc_id=doc_id, access=access.to_dict())
+        if ignored:
+            self.audit.record(actor, "front_matter_ignored", doc_id=doc_id, keys=ignored, trust=trust)
 
         self.audit.record(
             actor,
@@ -405,13 +493,69 @@ class Tenant:
             "impact": impact,
         }
 
+    def _mark_index_pending(self, doc_id: str, pending: bool) -> None:
+        d = self.store.get_document(self.id, doc_id)
+        if not d:
+            return
+        meta = dict(d.get("meta") or {})
+        if bool(meta.get("index_pending")) == pending:
+            return
+        meta["index_pending"] = pending
+        if not pending:
+            meta.pop("index_pending", None)
+        d["meta"] = meta
+        self.store.upsert_document(self.id, d)
+
+    def reindex_document(self, doc_id: str, actor: str = "system") -> int:
+        """Embed and index a document's current chunks again (after an indexing failure)."""
+        d = self.store.get_document(self.id, doc_id)
+        if not d:
+            raise KeyError(doc_id)
+        rows = self.store.doc_chunks(self.id, doc_id)
+        texts = [self._index_text(r) for r in rows]
+        if texts:
+            vecs = self._embed(texts)
+            self.index.upsert([(r["chunk_id"], vecs[i], texts[i], self._payload(r, d)) for i, r in enumerate(rows)])
+        self._mark_index_pending(doc_id, False)
+        self.bump_generation()
+        self.audit.record(actor, "reindexed", doc_id=doc_id, chunks=len(rows))
+        return len(rows)
+
+    def reconcile_index(self, actor: str = "system") -> list[str]:
+        """Finish indexing every document whose indexing failed. Safe to run any time."""
+        done = []
+        for d in self.store.list_documents(self.id):
+            if (d.get("meta") or {}).get("index_pending") and d["status"] != "tombstoned":
+                try:
+                    self.reindex_document(d["doc_id"], actor)
+                    done.append(d["doc_id"])
+                except Exception:  # noqa: S112 - the vector store is still down; try again next time
+                    continue
+        return done
+
     def _ingest_zip(
-        self, data: bytes, filename: str, *, actor: str, source: str | None, hints: dict[str, Any] | None, depth: int
+        self,
+        data: bytes,
+        filename: str,
+        *,
+        actor: str,
+        source: str | None,
+        hints: dict[str, Any] | None,
+        depth: int,
+        trust: str = "content",
+        apply_relations: bool | None = None,
     ) -> dict[str, Any]:
         if depth >= ZIP_DEPTH:
             raise ValueError(f"{filename}: archive nesting deeper than {ZIP_DEPTH}")
         results = []
         with zipfile.ZipFile(io.BytesIO(data)) as z:
+            infos = [i for i in z.infolist() if not i.is_dir()]
+            total = sum(i.file_size for i in infos)
+            packed = max(1, sum(i.compress_size for i in infos))
+            if len(infos) > ZIP_MAX_ENTRIES:
+                raise ValueError(f"{filename}: more than {ZIP_MAX_ENTRIES} files in one archive")
+            if total > ZIP_MAX_TOTAL_MB * 1024 * 1024 or total / packed > ZIP_MAX_RATIO:
+                raise ValueError(f"{filename}: archive expands too far (possible zip bomb); not ingested")
             for info in z.infolist():
                 if info.is_dir():
                     continue
@@ -421,18 +565,38 @@ class Tenant:
                     continue
                 inner = z.read(info)
                 results.append(
-                    self.ingest(inner, info.filename, actor=actor, source=source, hints=hints, _depth=depth + 1)
+                    self.ingest(
+                        inner,
+                        info.filename,
+                        actor=actor,
+                        source=source,
+                        hints=hints,
+                        trust=trust,
+                        apply_relations=apply_relations,
+                        _depth=depth + 1,
+                    )
                 )
         return {"status": "archive", "filename": filename, "members": results}
 
-    def _apply_relations(self, doc_id: str, meta: dict[str, Any], actor: str) -> list[dict[str, Any]]:
+    def _apply_relations(
+        self, doc_id: str, meta: dict[str, Any], actor: str, trust: str = "pack"
+    ) -> list[dict[str, Any]]:
         """Write supersession edges, retire superseded documents, and list what a
-        modifying document touches (the circular impact analysis)."""
+        modifying document touches (the circular impact analysis).
+
+        Relations from ``content``-trust files are stored as proposed: they take
+        effect only once a curator approves them, so an upload or a crawled page
+        cannot retire a real circular."""
         effective = meta.get("effective_from") or meta.get("doc_date")
+        status = "proposed" if trust == "content" else "auto"
         for rel in meta.get("relations", []):
             dst = self.store.find_by_ref(self.id, rel["dst_ref"])
             if dst and dst["doc_id"] == doc_id:
                 continue
+            if status == "proposed" and rel["rel_type"] != "refers_to":
+                self.audit.record(
+                    actor, "relation_proposed", src_doc=doc_id, rel_type=rel["rel_type"], dst_ref=rel["dst_ref"]
+                )
             self.store.add_relation(
                 self.id,
                 {
@@ -443,9 +607,26 @@ class Tenant:
                     "clause_id": rel.get("clause_id"),
                     "effective_from": effective,
                     "evidence": rel.get("evidence"),
+                    "status": "auto" if rel["rel_type"] == "refers_to" else status,
                 },
             )
         self.store.resolve_relations(self.id)
+        self.retire_superseded(actor)
+        return self.impact_of(doc_id)
+
+    def review_relation(self, rid: int, approve: bool, actor: str) -> dict[str, Any]:
+        """A curator approves or rejects a proposed supersession or amendment."""
+        rows = self.store.rows(relations, tenant=self.id, id=rid)
+        if not rows:
+            raise KeyError(f"no relation {rid}")
+        self.store.update_row(relations, {"id": rid, "tenant": self.id}, status="approved" if approve else "rejected")
+        self.audit.record(actor, "relation_approved" if approve else "relation_rejected", relation_id=rid)
+        if approve:
+            self.retire_superseded(actor)
+        self.bump_generation()
+        return {**rows[0], "status": "approved" if approve else "rejected"}
+
+    def retire_superseded(self, actor: str) -> None:
         # supersession: a document superseded by one already in force stops being current
         today = date.today().isoformat()
         for r in self.store.all_relations(self.id):
@@ -456,7 +637,6 @@ class Tenant:
                     self.index.set_payload_where(r["dst_doc"], {"current": False})
                     self._flag_memories(r["dst_doc"])
                     self.audit.record(actor, "superseded", doc_id=r["dst_doc"], by=r["src_doc"])
-        return self.impact_of(doc_id)
 
     def _flag_memories(self, doc_id: str) -> None:
         for m in self.store.rows(memories, tenant=self.id):
@@ -752,7 +932,9 @@ class Tenant:
         for r in sorted(rels, key=lambda r: r["effective_from"] or ""):
             if r["src_doc"] not in ok:
                 continue
-            src_chunks = [x for x in self.store.doc_chunks(self.id, r["src_doc"]) if r["clause_id"] in x["text"]]
+            cands = self.store.doc_chunks(self.id, r["src_doc"])
+            src_chunks = [x for x in cands if x.get("clause_id") and _clause_match(r["clause_id"], x["clause_id"])]
+            src_chunks = src_chunks or [x for x in cands if mentions_clause(x["text"], r["clause_id"])]
             if src_chunks:
                 d = docs[r["src_doc"]]
                 out.append((src_chunks[0], d, f"Amends clause {r['clause_id']} w.e.f. {r['effective_from']}"))
@@ -829,12 +1011,43 @@ def _no_stricter(current: Access, new: Access) -> bool:
     return not (new.groups and not set(new.groups) <= set(current.groups))
 
 
+def mentions_clause(text: str, clause: str) -> bool:
+    """'16.1' as a whole clause number: not inside '116.1', '16.12' or a date."""
+    return bool(re.search(rf"(?<![\d.]){re.escape(clause)}(?!\d|\.\d)", text or ""))
+
+
 def _clause_match(a: str, b: str) -> bool:
     return a == b or b.startswith(a + ".") or a.startswith(b + ".")
 
 
 def _majority(xs: list[str]) -> str:
     return max(set(xs), key=xs.count) if xs else "en"
+
+
+TRUST_LEVELS = ("pack", "curator", "content")
+# front-matter keys a file may only set about itself when it comes from a tenant pack
+PROTECTED_FRONT_MATTER = frozenset(
+    {"doc_id", "access", "supersedes", "superseded_by", "amends", "modifies", "relations", "legal_status", "status"}
+)
+_DOC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def doc_id_ok(doc_id: str) -> bool:
+    return bool(_DOC_ID.fullmatch(doc_id or ""))
+
+
+def _may_version(existing: dict[str, Any], actor: str, source: str | None, named: bool) -> bool:
+    """May a content-trust file become the next version of ``existing``?
+
+    Yes when the same person uploaded it, or the same connector (a re-crawl of the
+    same URL or record) produced it. A legacy document with no recorded owner can
+    only be versioned by its own connector."""
+    meta = existing.get("meta") or {}
+    if source and source.startswith("connector:"):
+        return existing.get("source") == source
+    if meta.get("owner"):
+        return meta["owner"] == actor and (existing.get("source") or "upload") == (source or "upload")
+    return named and existing.get("source") == source and bool(source)
 
 
 def _derive_doc_id(source: str | None, url: str | None, ref: str | None, filename: str) -> str:
@@ -867,6 +1080,8 @@ def scan_malware(data: bytes) -> dict[str, Any]:
             reply = s.recv(4096).decode("utf-8", "replace").strip("\0\n ")
     except OSError as e:
         return {"scanned": False, "error": str(e)}
+    if not reply or reply.endswith("ERROR"):  # e.g. "INSTREAM size limit exceeded. ERROR": not scanned, not clean
+        return {"scanned": False, "error": reply or "empty reply from clamd"}
     infected = reply.endswith("FOUND")
     return {
         "scanned": True,

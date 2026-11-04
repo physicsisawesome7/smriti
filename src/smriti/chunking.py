@@ -115,14 +115,23 @@ def chunk_document(
 def _split(text: str) -> list[str]:
     if _words(text) <= MAX_WORDS * 1.3:
         return [text]
-    sents = re.split(r"(?<=[.;।?])\s+", text)
-    pieces, cur = [], []
+    sents: list[str] = []
+    for s in re.split(r"(?<=[.;।?])\s+", text):
+        w = s.split()
+        if len(w) > MAX_WORDS:  # text with no sentence breaks (tables flattened, OCR runs)
+            sents += [" ".join(w[i : i + MAX_WORDS // 2]) for i in range(0, len(w), MAX_WORDS // 2)]
+        else:
+            sents.append(s)
+    pieces: list[str] = []
+    cur: list[str] = []
+    fresh = 0  # sentences in cur that no earlier piece contains
     for s in sents:
         cur.append(s)
+        fresh += 1
         if _words(" ".join(cur)) >= MAX_WORDS:
             pieces.append(" ".join(cur))
-            cur = cur[-1:]  # one sentence of overlap keeps context across the cut
-    if cur and (not pieces or " ".join(cur) != pieces[-1].split(" ", 1)[-1]):
+            cur, fresh = cur[-1:], 0  # one sentence of overlap keeps context across the cut
+    if fresh:
         pieces.append(" ".join(cur))
     return pieces
 

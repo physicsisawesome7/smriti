@@ -407,6 +407,8 @@ class CodeRunner(Tool):
         ]
 
     def call(self, action: str, args: dict[str, Any]) -> ToolResult:
+        if sandbox.mode() == "local" and not self.ctx.principal.can("administer"):
+            raise ToolError("local code execution (development only) is limited to administrators")
         try:
             out = sandbox.run(str(args.get("code") or ""), timeout_s=20)
         except sandbox.SandboxUnavailable as e:

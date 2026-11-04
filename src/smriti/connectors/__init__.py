@@ -348,6 +348,14 @@ def run_job(t: Any, box: Any, jid: int) -> dict[str, Any]:
     if kind == "upload":
         config["files"] = payload.get("files", [])
     hints_base = access_hints(config)
+    creator_curates = False
+    try:
+        cp = t.principal(job["created_by"])
+        creator_curates = cp.can("curate") or cp.can("administer")
+    except Exception:  # noqa: S110 - creator left the directory: run with content trust
+        pass
+    trust = "curator" if creator_curates else "content"
+    apply_rel = bool(config.get("apply_relations")) and creator_curates
     ctx = Ctx(config=config, secrets=secrets, state=state, log=log, cancelled=cancelled, connector_id=cid, tenant=t)
     connector = REGISTRY[kind](ctx)
     max_items = int(config.get("max_items") or 500)
@@ -378,6 +386,8 @@ def run_job(t: Any, box: Any, jid: int) -> dict[str, Any]:
                     hints={**hints_base, **item.hints},
                     doc_id=_derived_doc_id(cid, item),
                     legal_status=config.get("legal_status"),
+                    trust=trust,
+                    apply_relations=apply_rel,
                 )
                 status = res["status"]
                 if status == "archive":
@@ -418,11 +428,22 @@ def run_job(t: Any, box: Any, jid: int) -> dict[str, Any]:
     finally:
         connector.close()
 
-    # removal detection only after a full, uncancelled discovery
-    if conn_row is not None and complete and not error:
-        prev: dict[str, str] = state.get("docs", {})
-        gone = [k for k in prev if k not in seen_keys]
+    # Removal detection only after a full, clean discovery. A failed request, a failed item,
+    # or a run that finds nothing where there was something is an outage, not a removal.
+    prev: dict[str, str] = state.get("docs", {}) if conn_row is not None else {}
+    clean = complete and not error and not stats["failed"] and not getattr(connector, "errors", 0)
+    if conn_row is not None and clean and not (prev and not seen_keys):
+        misses: dict[str, int] = {k: v for k, v in state.get("misses", {}).items() if k not in seen_keys}
+        need = max(1, int(config.get("removal_misses") or 3))
+        gone = []
+        for k in prev:
+            if k in seen_keys:
+                continue
+            misses[k] = misses.get(k, 0) + 1
+            if misses[k] >= need:
+                gone.append(k)
         stats["removed"] = len(gone)
+        keep = {k: prev[k] for k in prev if k not in seen_keys and k not in gone}
         if gone and config.get("on_removed") == "tombstone":
             for k in gone:
                 try:
@@ -431,14 +452,22 @@ def run_job(t: Any, box: Any, jid: int) -> dict[str, Any]:
                     log(f"could not tombstone {prev[k]}: {e}")
         elif gone:
             log(f"{len(gone)} items no longer in the source (kept; set 'tombstone' to retire them)")
-        state["docs"] = seen_keys
+        if keep:
+            log(f"{len(keep)} items missing this run; counted, not yet removed (needs {need} runs in a row)")
+        state["docs"] = {**seen_keys, **keep}
+        state["misses"] = {k: misses[k] for k in keep}
     elif conn_row is not None:
-        state["docs"] = {**state.get("docs", {}), **seen_keys}
+        if complete and not error:
+            log("removal detection skipped: some requests or items failed, or the source returned nothing")
+        state["docs"] = {**prev, **seen_keys}
     if conn_row is not None:
         state["last_counts"] = stats
         t.store.update_row(connectors_t, {"id": cid}, state=json.dumps(state))
 
-    final = "cancelled" if cancelled_flag[0] else "failed" if error and not results else "done"
+    partial = bool(stats["failed"] or getattr(connector, "errors", 0) or (error and results))
+    final = (
+        "cancelled" if cancelled_flag[0] else "failed" if error and not results else "partial" if partial else "done"
+    )
     log(f"{final}: {json.dumps(stats)}")
     t.store.update_row(ingest_jobs, {"id": jid}, status=final, error=error, finished_at=time.time())
     flush(force=True)
@@ -497,11 +526,11 @@ class JobRunner(threading.Thread):
     def __init__(self, tenants: dict[str, Any], box: Any, poll_s: float = 1.0):
         super().__init__(daemon=True, name="smriti-jobs")
         self.tenants, self.box, self.poll_s = tenants, box, poll_s
-        self._stop = threading.Event()
+        self._halt = threading.Event()  # not _stop: that name belongs to threading.Thread
 
     def run(self) -> None:
         last_reap = 0.0
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             worked = False
             for t in self.tenants.values():
                 try:
@@ -516,10 +545,10 @@ class JobRunner(threading.Thread):
             if time.time() - last_reap > 60:
                 last_reap = time.time()
             if not worked:
-                self._stop.wait(self.poll_s)
+                self._halt.wait(self.poll_s)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._halt.set()
 
 
 def run_pending(tenants: Iterable[Any], box: Any) -> list[dict[str, Any]]:

@@ -17,6 +17,7 @@ import ast
 import json
 import operator
 import re
+import threading
 from typing import Any
 
 
@@ -70,7 +71,7 @@ FUNCS: dict[str, Any] = {
     "startswith": lambda s, p: str(s).startswith(str(p)),
     "split": lambda s, sep=None: str(s).split(sep),
     "join": lambda items, sep=", ": str(sep).join(str(i) for i in items),
-    "matches": lambda s, pattern: re.search(str(pattern)[:200], str(s)) is not None,
+    "matches": lambda s, pattern: _safe_search(str(pattern), str(s)),
     "number": lambda s: _first_number(s),
     "json": lambda s: json.loads(s) if isinstance(s, str) else s,
     "default": lambda x, d: d if x in (None, "", [], {}) else x,
@@ -95,10 +96,35 @@ def evaluate(src: str, variables: dict[str, Any]) -> Any:
         tree = ast.parse(src, mode="eval")
     except SyntaxError as e:
         raise ExprError(f"invalid expression: {e.msg}") from e
-    return _eval(tree.body, variables)
+    _BUDGET.left = MAX_STEPS
+    out = _eval(tree.body, variables)
+    if isinstance(out, (str, list, dict)) and len(out) > MAX_RESULT:
+        raise ExprError("expression result is too large")
+    return out
+
+
+MAX_STEPS = 100_000  # evaluation steps per expression: nesting and comprehensions cannot run away
+MAX_RESULT = 1_000_000
+_BUDGET = threading.local()
+# a pattern that nests quantifiers ("(a+)+", "(\\w*)*") can take exponential time
+_NESTED_QUANT = re.compile(r"\([^)]*[+*][^)]*\)\s*[+*{]")
+
+
+def _safe_search(pattern: str, s: str) -> bool:
+    pattern = pattern[:200]
+    if _NESTED_QUANT.search(pattern):
+        raise ExprError("pattern has nested repetition; simplify it")
+    try:
+        return re.search(pattern, s[:20000]) is not None
+    except re.error as e:
+        raise ExprError(f"invalid pattern: {e}") from e
 
 
 def _eval(n: ast.AST, v: dict[str, Any]) -> Any:
+    left = getattr(_BUDGET, "left", MAX_STEPS) - 1
+    _BUDGET.left = left
+    if left < 0:
+        raise ExprError("expression is too complex")
     if isinstance(n, ast.Constant) and isinstance(n.value, (str, int, float, bool, type(None))):
         return n.value
     if isinstance(n, ast.Name):

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .config import RolesConfig, UserDef
-from .models import Access, Principal, class_rank
+from .models import Access, Principal, class_rank, clearance_rank
 
 ALL = "*"
 
@@ -117,7 +117,7 @@ def evaluate(p: Principal, access: dict[str, Any] | Access, doc_type: str) -> De
     reasons: list[str] = []
     if not p.can("view"):
         return Decision(False, ["no 'view' grant (administering the system does not include reading its content)"])
-    if class_rank(a.doc_class) > class_rank(p.clearance):
+    if class_rank(a.doc_class) > clearance_rank(p.clearance):
         return Decision(False, [f"document is '{a.doc_class}', clearance is '{p.clearance}'"])
     if a.groups and not set(a.groups) & set(p.groups):
         return Decision(False, [f"need-to-know group required: {', '.join(a.groups)}"])
@@ -158,7 +158,7 @@ class AccessFilter:
         allowed_classes = [
             c
             for c in {c for s in self.p.role_scopes for c in s["doc_class"]}
-            if class_rank(c) <= class_rank(self.p.clearance)
+            if class_rank(c) <= clearance_rank(self.p.clearance)
         ]
         should = []
         for s in self.p.role_scopes:

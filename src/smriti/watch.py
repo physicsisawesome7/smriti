@@ -35,6 +35,7 @@ import httpx
 
 from .access import evaluate
 from .config import SourceConfig
+from .egress import check_url, guarded_client
 from .engine import Tenant
 from .models import Principal
 from .store import alerts, jobs, source_state
@@ -63,12 +64,15 @@ def _sha(b: bytes | str) -> str:
     return hashlib.sha256(b if isinstance(b, bytes) else b.encode("utf-8")).hexdigest()
 
 
+MAX_FETCH_BYTES = 100 * 2**20
+
+
 class HostPolicy:
     """Per-host politeness: rate limit, robots.txt and a circuit breaker."""
 
     def __init__(self) -> None:
         self._last: dict[str, float] = {}
-        self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._robots: dict[str, tuple[Any, float]] = {}
         self._fails: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
@@ -83,16 +87,15 @@ class HostPolicy:
     def allowed(self, client: httpx.Client, url: str) -> bool:
         s = urlsplit(url)
         base = f"{s.scheme}://{s.netloc}"
-        if base not in self._robots:
-            rp = urllib.robotparser.RobotFileParser()
+        cached = self._robots.get(base)
+        if cached is None or (cached[0] is False and time.time() - cached[1] > 600):
             try:
                 r = client.get(base + "/robots.txt", timeout=10)
-                rp.parse(r.text.splitlines() if r.status_code == 200 else [])
-                self._robots[base] = rp
+                self._robots[base] = (robots_policy(r.status_code, r.text), time.time())
             except httpx.HTTPError:
-                self._robots[base] = None  # unreachable robots.txt: allowed, as per RFC 9309
-        rp = self._robots[base]
-        return True if rp is None else rp.can_fetch(USER_AGENT, url)
+                self._robots[base] = (False, time.time())  # unreachable: disallow for now (RFC 9309 2.3.1.4)
+        rp = self._robots[base][0]
+        return rp is not False and (rp is True or rp.can_fetch(USER_AGENT, url))
 
     def open(self, host: str) -> bool:
         recent = [t for t in self._fails.get(host, []) if time.time() - t < 900]
@@ -101,6 +104,15 @@ class HostPolicy:
 
     def fail(self, host: str) -> None:
         self._fails.setdefault(host, []).append(time.time())
+
+
+def robots_policy(status: int, text: str) -> Any:
+    """RFC 9309: 2xx parse; 4xx (except 429) means no rules; 5xx and 429 mean disallow for now."""
+    if 200 <= status < 300:
+        rp = urllib.robotparser.RobotFileParser()
+        rp.parse(text.splitlines())
+        return rp
+    return bool(400 <= status < 500 and status != 429)
 
 
 _hosts = HostPolicy()
@@ -123,7 +135,9 @@ class Crawler:
         fetch = src.fetch or {}
         self.min_interval = _rate(fetch.get("rate_limit"))
         self.respect_robots = fetch.get("respect_robots", True)
-        self.client = client or httpx.Client(
+        # every request and redirect hop passes the egress guard: a pack source must not
+        # reach cloud metadata, loopback services or Smriti's own data stores
+        self.client = client or guarded_client(
             headers={"User-Agent": USER_AGENT},
             timeout=fetch.get("timeout_s", 30),
             follow_redirects=True,
@@ -140,7 +154,10 @@ class Crawler:
         for attempt in range(3):
             _hosts.wait(host, self.min_interval)
             try:
+                check_url(url)
                 r = self.client.get(url, headers=headers or {})
+                if len(r.content) > MAX_FETCH_BYTES:
+                    raise ValueError(f"{url}: larger than {MAX_FETCH_BYTES // 2**20} MB")
                 if r.status_code >= 500:
                     raise httpx.HTTPStatusError(f"{r.status_code}", request=r.request, response=r)
                 return r
@@ -414,6 +431,7 @@ def run_source(t: Tenant, name: str, actor: str = "watcher", client: httpx.Clien
                     source_url=it["file"] if not it.get("path") else None,
                     hints=hints,
                     legal_status=src.legal_status,
+                    trust="pack",  # sources defined in the tenant pack are curated configuration
                 )
                 if res["status"] == "duplicate":
                     continue
@@ -427,7 +445,7 @@ def run_source(t: Tenant, name: str, actor: str = "watcher", client: httpx.Clien
                 report[kind].append(entry)
                 report["impact"] += res.get("impact", [])
             except Exception as e:  # one bad file never blocks the rest of the source
-                report["errors"].append({"url": it.get("file"), "error": str(e)[:300]})
+                report["errors"].append({"url": it.get("file"), "key": key, "error": str(e)[:300]})
                 t.store.insert(
                     jobs,
                     tenant=t.id,
@@ -441,7 +459,12 @@ def run_source(t: Tenant, name: str, actor: str = "watcher", client: httpx.Clien
                 )
         for key in set(snapshot) - set(current):
             report["removed"].append({"key": key})
-        new_snapshot = {k: v[0] for k, v in current.items()}
+        failed_keys = {e["key"] for e in report["errors"] if e.get("key")}
+        new_snapshot = {k: v[0] for k, v in current.items() if k not in failed_keys}
+        for k in failed_keys & set(snapshot):  # a failed update keeps the previous fingerprint
+            new_snapshot[k] = snapshot[k]
+        if failed_keys:
+            listing_hash = None  # do not skip the next run as "unchanged": failed items must retry
         t.store.update_row(
             source_state,
             {"tenant": t.id, "source": name},
@@ -656,8 +679,53 @@ def source_health(t: Tenant) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------- scheduler
 
 
+CRON_NAMES = {
+    **{d: i for i, d in enumerate(["sun", "mon", "tue", "wed", "thu", "fri", "sat"])},
+    **{
+        m: i + 1
+        for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])
+    },
+}
+
+
 def cron_match(expr: str, dt: datetime) -> bool:
-    """Minimal five-field cron: '*', '*/n', 'a-b', 'a,b,c'."""
+    """Five-field cron: '*', '*/n', 'a-b', 'a,b,c', and day/month names ('mon', 'jan').
+    A malformed expression never matches and never raises, so one bad source cannot
+    stop every schedule."""
+    try:
+        return _cron_match(expr, dt)
+    except (ValueError, TypeError):
+        return False
+
+
+CRON_BOUNDS = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)]
+
+
+def valid_cron(expr: str) -> bool:
+    """Every field parses and stays within its range (minute, hour, day, month, weekday)."""
+    expr = re.sub(r"[a-z]{3}", lambda m: str(CRON_NAMES.get(m.group(0), m.group(0))), (expr or "").lower())
+    fields = expr.split()
+    if len(fields) != 5:
+        return False
+    try:
+        for f, (lo, hi) in zip(fields, CRON_BOUNDS, strict=True):
+            for part in f.split(","):
+                rng, _, step = part.partition("/")
+                if step and int(step) < 1:
+                    return False
+                if rng == "*":
+                    continue
+                a, _, b = rng.partition("-")
+                if not (lo <= int(a) <= hi and lo <= int(b or a) <= hi):
+                    return False
+    except ValueError:
+        return False
+    return True
+
+
+def _cron_match(expr: str, dt: datetime) -> bool:
+    expr = expr.lower()
+    expr = re.sub(r"[a-z]{3}", lambda m: str(CRON_NAMES[m.group(0)]) if m.group(0) in CRON_NAMES else m.group(0), expr)
     fields = expr.split()
     if len(fields) != 5:
         return False
@@ -691,11 +759,11 @@ class Scheduler(threading.Thread):
         super().__init__(daemon=True, name="smriti-scheduler")
         self.tenants = tenants
         self.box = box  # unseals tool credentials for scheduled agents
-        self._stop = threading.Event()
+        self._halt = threading.Event()  # not _stop: that name belongs to threading.Thread
         self._fired: set[str] = set()
 
     def run(self) -> None:
-        while not self._stop.wait(20):
+        while not self._halt.wait(20):
             now = datetime.now().replace(second=0, microsecond=0)
             for t in self.tenants.values():
                 for src in t.pack.sources:
@@ -715,6 +783,10 @@ class Scheduler(threading.Thread):
                         enqueue_scheduled(t, now)  # the job runner executes them
                     except Exception as e:
                         print(f"scheduler: {e}", flush=True)
+                    try:
+                        t.reconcile_index()
+                    except Exception as e:
+                        print(f"scheduler: reconcile: {e}", flush=True)
                     if self.box is not None:
                         try:
                             from .agents.runtime import run_scheduled
@@ -726,4 +798,4 @@ class Scheduler(threading.Thread):
                 self._fired.clear()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._halt.set()

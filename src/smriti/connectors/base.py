@@ -14,7 +14,6 @@ from __future__ import annotations
 import re
 import threading
 import time
-import urllib.robotparser
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -110,7 +109,8 @@ class Connector:
         self.secrets = ctx.secrets
         self._client: httpx.Client | None = None
         self._last: dict[str, float] = {}
-        self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._robots: dict[str, Any] = {}
+        self.errors = 0  # discovery requests that failed; removal detection is skipped when any did
         self._lock = threading.Lock()
 
     def discover(self) -> Iterator[Item]:
@@ -175,15 +175,15 @@ class Connector:
         s = urlsplit(url)
         base = f"{s.scheme}://{s.netloc}"
         if base not in self._robots:
-            rp = urllib.robotparser.RobotFileParser()
+            from ..watch import robots_policy
+
             try:
                 r = self.http.get(base + "/robots.txt", timeout=10)
-                rp.parse(r.text.splitlines() if r.status_code == 200 else [])
-                self._robots[base] = rp
+                self._robots[base] = robots_policy(r.status_code, r.text)
             except httpx.HTTPError:
-                self._robots[base] = None
+                self._robots[base] = False  # unreachable: disallow for this run (RFC 9309)
         rp = self._robots[base]
-        return True if rp is None else rp.can_fetch(USER_AGENT, url)
+        return rp is not False and (rp is True or rp.can_fetch(USER_AGENT, url))
 
 
 def filename_for(url: str, content_type: str | None, fallback: str = "page") -> str:
@@ -239,6 +239,22 @@ COMMON_FIELDS = [
         default="keep",
         options=["keep", "tombstone"],
         help="keep the archived copy, or tombstone it so it stops appearing in answers",
+        group="Schedule",
+    ),
+    F(
+        "removal_misses",
+        "Runs an item must be missing before it is tombstoned",
+        "number",
+        default=3,
+        help="a site outage or a failed run never counts as a miss",
+        group="Schedule",
+    ),
+    F(
+        "apply_relations",
+        "Apply supersession and amendments found in these documents without review",
+        "bool",
+        default=False,
+        help="off: a curator approves each proposed supersession under Library",
         group="Schedule",
     ),
     F(

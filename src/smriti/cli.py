@@ -24,6 +24,8 @@ import yaml
 
 from .config import Settings, load_pack
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
 
 def _platform(args: argparse.Namespace) -> Any:
     from .api import Platform
@@ -56,7 +58,9 @@ def seed(plat: Any, tenant_id: str | None = None) -> list[dict[str, Any]]:
             side = p.with_name(p.name + ".meta.yaml")
             if side.exists():
                 hints.update(yaml.safe_load(side.read_text(encoding="utf-8")) or {})
-            res = t.ingest(p.read_bytes(), p.name, actor="seed", source=item.get("source", "seed"), hints=hints)
+            res = t.ingest(
+                p.read_bytes(), p.name, actor="seed", source=item.get("source", "seed"), hints=hints, trust="pack"
+            )
             out.append(res)
             print(f"  {res['status']:<12} {res.get('doc_id', '')}  {res.get('title', p.name)}")
     return out
@@ -138,6 +142,15 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("SMRITI_SELF_URL", f"http://{me}:{args.port}")
         os.environ.setdefault("SMRITI_PUBLIC_URL", os.environ["SMRITI_SELF_URL"])
         s = Settings.from_env()
+        exposed = os.environ.get("SMRITI_PUBLISH_BIND") or args.host  # Docker: the host side of the port mapping
+        if s.auth_mode == "demo" and exposed not in LOOPBACK and os.environ.get("SMRITI_DEMO_INSECURE") != "1":
+            print(
+                f"refusing to serve demo auth on {exposed}: anyone who can reach it can claim to be any user.\n"
+                "Use SMRITI_AUTH=token with SMRITI_API_TOKENS (or an SSO proxy), bind to 127.0.0.1, "
+                "or set SMRITI_DEMO_INSECURE=1 for a throwaway demo.",
+                file=sys.stderr,
+            )
+            return 2
         workers = args.workers
         if workers > 1 and s.vector_backend != "qdrant":
             print("--workers > 1 needs SMRITI_VECTOR_BACKEND=qdrant (each process would hold its own index); using 1")
@@ -192,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "ingest":
         for f in args.files:
             p = Path(f)
-            print(json.dumps(t.ingest(p.read_bytes(), p.name, actor=args.user), indent=2, default=str))
+            print(json.dumps(t.ingest(p.read_bytes(), p.name, actor=args.user, trust="curator"), indent=2, default=str))
     elif args.cmd == "crawl":
         from .watch import run_source
 

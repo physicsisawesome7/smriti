@@ -92,7 +92,14 @@ def _index(t: Tenant, mid: int) -> None:
         + m["text"]
     )
     # JSON is valid YAML, so the front matter carries the inherited access rule
-    res = t.ingest(body.encode("utf-8"), f"memory-{mid}.md", actor=m["owner"], source="memory", doc_id=f"memory-{mid}")
+    res = t.ingest(
+        body.encode("utf-8"),
+        f"memory-{mid}.md",
+        actor=m["owner"],
+        source="memory",
+        doc_id=f"memory-{mid}",
+        trust="pack",
+    )
     t.store.update_row(memories, {"id": mid}, doc_id=res["doc_id"])
 
 
@@ -102,6 +109,9 @@ def review(t: Tenant, p: Principal, mid: int, approve: bool) -> dict[str, Any]:
     m = get(t, mid)
     if m["status"] != "proposed":
         raise ValueError("not awaiting review")
+    docs = t.store.documents_by_ids(t.id, list(m.get("provenance") or []))
+    if len(t.authz.bulk_check(p, docs)) < len(docs):
+        raise PermissionError("you cannot review this memory: it comes from documents you are not allowed to read")
     t.store.update_row(memories, {"id": mid}, status="approved" if approve else "rejected")
     t.audit.record(p.user_id, "memory_review", memory_id=mid, approved=approve)
     if approve:
@@ -117,7 +127,7 @@ def delete(t: Tenant, p: Principal, mid: int) -> None:
         chunk_ids = [c["chunk_id"] for c in t.store.all_chunks(t.id) if c["doc_id"] == m["doc_id"]]
         t.index.delete(chunk_ids)
         t.tombstone(m["doc_id"], p.user_id, "memory erased")
-    t.store.update_row(memories, {"id": mid}, status="erased", text="[erased]")
+    t.store.delete_rows(memories, id=mid)  # erase means gone: not a row with blanked text
     t.audit.record(p.user_id, "memory_erase", memory_id=mid)
 
 

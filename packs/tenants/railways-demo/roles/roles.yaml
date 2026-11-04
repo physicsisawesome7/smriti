@@ -30,7 +30,7 @@ roles:
     scope: {division: all, doc_class: [public, internal, confidential, secret]}
   knowledge-manager:
     description: Curates sources, approves ingestion and memory, marks documents superseded
-    grants: [view, upload, curate]
+    grants: [view, upload, curate, execute_code]
     scope: {division: all, doc_class: [public, internal]}
   org-admin:
     description: Configures the tenant; not a reader of content

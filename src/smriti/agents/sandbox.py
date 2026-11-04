@@ -16,6 +16,8 @@ Files the code writes to its working directory come back as artifacts.
 from __future__ import annotations
 
 import base64
+import contextlib
+import hmac
 import json
 import os
 import subprocess
@@ -45,11 +47,10 @@ def mode() -> str:
 def run(code: str, timeout_s: float = 15.0) -> dict[str, Any]:
     m = mode()
     if m == "service":
-        headers = (
-            {"Authorization": f"Bearer {os.environ['SMRITI_SANDBOX_TOKEN']}"}
-            if os.environ.get("SMRITI_SANDBOX_TOKEN")
-            else {}
-        )
+        token = os.environ.get("SMRITI_SANDBOX_TOKEN", "")
+        if not token:
+            raise SandboxUnavailable("SMRITI_SANDBOX_TOKEN is not set; the installer writes one into .env")
+        headers = {"Authorization": f"Bearer {token}"}
         try:
             r = httpx.post(
                 os.environ["SMRITI_SANDBOX_URL"].rstrip("/") + "/run",
@@ -79,6 +80,41 @@ def _limits(mem_mb: int, cpu_s: int):  # type: ignore[no-untyped-def]
     return apply
 
 
+def _run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[bytes]:
+    """subprocess.run that remembers the child's process group for _kill_group."""
+    timeout = kw.pop("timeout")
+    with subprocess.Popen(  # noqa: S603 - fixed interpreter and arguments
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **{k: v for k, v in kw.items() if k not in ("capture_output", "check")},
+    ) as proc:
+        if os.name == "posix":
+            _LAST_PGID.append(proc.pid)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            proc.kill()
+            out, err = proc.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from e
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+_LAST_PGID: list[int] = []
+
+
+def _kill_group() -> None:
+    """Kill the process group of the last run (POSIX). The child called setsid, so its
+    group id is its pid; anything it spawned and left running dies with it."""
+    if os.name != "posix":
+        return
+    import signal
+
+    while _LAST_PGID:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(_LAST_PGID.pop(), signal.SIGKILL)
+
+
 def run_local(code: str, timeout_s: float = 15.0, mem_mb: int = 512) -> dict[str, Any]:
     timeout_s = max(1.0, min(float(timeout_s), 60.0))
     with tempfile.TemporaryDirectory(prefix="smriti-sbx-") as d:
@@ -92,7 +128,7 @@ def run_local(code: str, timeout_s: float = 15.0, mem_mb: int = 512) -> dict[str
             kw["preexec_fn"] = _limits(mem_mb, int(timeout_s) + 1)
         timed_out = False
         try:
-            p = subprocess.run(
+            p = _run(
                 [sys.executable, "-I", "main.py"],
                 cwd=d,
                 env=env,
@@ -105,6 +141,8 @@ def run_local(code: str, timeout_s: float = 15.0, mem_mb: int = 512) -> dict[str
             out, err, code_ = p.stdout, p.stderr, p.returncode
         except subprocess.TimeoutExpired as e:
             out, err, code_, timed_out = e.stdout or b"", e.stderr or b"", -9, True
+        finally:
+            _kill_group()  # children the script started must not outlive it
         files = []
         for f in sorted(work.iterdir()):
             if f.name == "main.py" or not f.is_file() or len(files) >= MAX_FILES:
@@ -125,9 +163,10 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True}) if self.path == "/health" else self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        token = os.environ.get("SMRITI_SANDBOX_TOKEN")
-        if token and self.headers.get("Authorization") != f"Bearer {token}":
-            return self._send(401, {"error": "bad token"})
+        token = os.environ.get("SMRITI_SANDBOX_TOKEN", "")
+        given = self.headers.get("Authorization") or ""
+        if not token or not hmac.compare_digest(given.encode(), f"Bearer {token}".encode()):
+            return self._send(401, {"error": "bad or missing token"})
         if self.path != "/run":
             return self._send(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)

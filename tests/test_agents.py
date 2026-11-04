@@ -241,6 +241,7 @@ def _rest_tool(tenant, platform, monkeypatch, log):  # type: ignore[no-untyped-d
                 "base_url": "http://helpdesk.example/api",
                 "operations": ops,
                 "allow_writes": True,
+                "allowed_roles": "section-engineer,knowledge-manager",
                 "auth": "bearer",
                 "token": "s3cret",
             },

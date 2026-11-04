@@ -174,7 +174,7 @@ def mount(app: FastAPI, plat: Any, ctx: Callable[..., tuple[Any, Principal]], ne
         if conv:
             errors(lambda: rt.own_conversation(t, p, conv))
         ch._used(t, row)
-        resp = sse(rt.chat(t, p, box, agent, q, conversation_id=conv, trigger="widget"))
+        resp = sse(ch.widget_events(t, row, rt.chat(t, p, box, agent, q, conversation_id=conv, trigger="widget")))
         resp.headers.update(cors(o))
         return resp
 
@@ -190,7 +190,7 @@ def mount(app: FastAPI, plat: Any, ctx: Callable[..., tuple[Any, Principal]], ne
         if json.loads(row["config"])["identity"] != "signed":
             raise HTTPException(403, "approvals in the widget need signed-in users; open Smriti to approve")
         p = errors(lambda: ch.principal_for(t, row, token=x_smriti_user_token))
-        resp = sse(rt.approve(t, p, box, run_id, bool(body.get("approve"))))
+        resp = sse(ch.widget_events(t, row, rt.approve(t, p, box, run_id, bool(body.get("approve")))))
         resp.headers.update(cors(o))
         return resp
 

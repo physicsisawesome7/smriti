@@ -12,6 +12,7 @@ Whisper or IndicConformer for audio. PyMuPDF is deliberately avoided (AGPL).
 
 from __future__ import annotations
 
+import codecs
 import csv
 import email
 import email.policy
@@ -19,11 +20,19 @@ import io
 import re
 import zipfile
 from collections.abc import Callable
+from typing import Any
+
+import yaml
 
 from .models import Block, ParsedDocument
 
 DEVANAGARI = re.compile(r"[ऀ-ॿ]")
-CLAUSE_HEAD = re.compile(r"^(?:clause\s+)?(\d{1,3}(?:\.\d{1,3}){0,3})[.)]?\s+\S", re.IGNORECASE)
+CLAUSE_HEAD = re.compile(
+    r"^(?:clause\s+)?(\d{1,3}(?:\.\d{1,3}){0,3})[.)]?\s+"
+    r"(?!(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\b)"
+    r"(?!(?:days?|weeks?|months?|years?|hours?|minutes?|per\b|percent|%|crores?|lakhs?|km|kms|m\b|mm\b))\S",
+    re.IGNORECASE,
+)
 
 # name -> callable(data, filename) -> ParsedDocument ; registered by optional integrations
 EXTERNAL_PARSERS: dict[str, Callable[[bytes, str], ParsedDocument]] = {}
@@ -82,10 +91,45 @@ def sniff(data: bytes, filename: str) -> str:
     if name.endswith((".md", ".markdown")):
         return "text/markdown"
     try:
-        data[:4096].decode("utf-8")
+        codecs.getincrementaldecoder("utf-8")().decode(data[:4096], final=False)
         return "text/plain"
     except UnicodeDecodeError:
         return "application/octet-stream"
+
+
+def _decode(data: bytes) -> str:
+    """UTF-8 (with or without BOM); fall back to the charset an HTML page declares."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        m = re.search(rb"charset=[\"']?([A-Za-z0-9_-]+)", data[:2048])
+        if m:
+            try:
+                return data.decode(m.group(1).decode("ascii"), errors="replace")
+            except LookupError:
+                pass
+        return data.decode("utf-8", errors="replace")
+
+
+def _is_front_matter(block: str) -> bool:
+    try:
+        meta = yaml.safe_load(block)
+    except yaml.YAMLError:
+        return False
+    return isinstance(meta, dict) and bool(meta)
+
+
+def _hidden(el: Any) -> bool:
+    """Hidden by the element itself or by any ancestor (a classic injection carrier)."""
+    for node in [el, *el.parents]:
+        if not hasattr(node, "get"):
+            continue
+        style = (node.get("style") or "").replace(" ", "").lower()
+        if "display:none" in style or "visibility:hidden" in style or "font-size:0" in style:
+            return True
+        if node.has_attr("hidden") or str(node.get("aria-hidden", "")).lower() == "true":
+            return True
+    return False
 
 
 def parse(data: bytes, filename: str) -> ParsedDocument:
@@ -98,22 +142,27 @@ def parse(data: bytes, filename: str) -> ParsedDocument:
                 return doc
         except Exception:  # noqa: S112 - an optional parser failing must fall back, never break ingest
             continue
-    if mime == "application/pdf":
-        doc = _pdf(data, filename)
-    elif mime.endswith("wordprocessingml.document"):
-        doc = _docx(data, filename)
-    elif mime.endswith("spreadsheetml.sheet"):
-        doc = _xlsx(data, filename)
-    elif mime == "text/html":
-        doc = _html(data.decode("utf-8", errors="replace"), filename)
-    elif mime == "message/rfc822":
-        doc = _eml(data, filename)
-    elif mime == "text/csv":
-        doc = _csv(data.decode("utf-8-sig", errors="replace"), filename)
-    elif mime in ("text/markdown", "text/plain"):
-        doc = _markdown(data.decode("utf-8-sig", errors="replace"), filename)
-    else:
-        raise ValueError(f"unsupported file type {mime} for {filename}")
+    try:
+        if mime == "application/pdf":
+            doc = _pdf(data, filename)
+        elif mime.endswith("wordprocessingml.document"):
+            doc = _docx(data, filename)
+        elif mime.endswith("spreadsheetml.sheet"):
+            doc = _xlsx(data, filename)
+        elif mime == "text/html":
+            doc = _html(_decode(data), filename)
+        elif mime == "message/rfc822":
+            doc = _eml(data, filename)
+        elif mime == "text/csv":
+            doc = _csv(_decode(data), filename)
+        elif mime in ("text/markdown", "text/plain"):
+            doc = _markdown(_decode(data), filename)
+        else:
+            raise ValueError(f"unsupported file type {mime} for {filename}")
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"{filename}: the file is damaged or could not be read ({type(e).__name__})") from e
     doc.mime = mime
     _score(doc)
     return doc
@@ -151,7 +200,7 @@ def _md_table(lines: list[str]) -> list[list[str]]:
 def _markdown(text: str, filename: str, title: str | None = None) -> ParsedDocument:
     if text.startswith("---"):
         end = text.find("\n---", 3)
-        if end != -1:
+        if end != -1 and _is_front_matter(text[3:end]):
             text = text[end + 4 :]
     blocks: list[Block] = []
     path: list[str] = []
@@ -352,7 +401,11 @@ def _cell(v: object) -> str:
 
 
 def _csv(text: str, filename: str) -> ParsedDocument:
-    rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
+    try:  # semicolon, tab and pipe CSVs (common in Indian and European exports) as well as commas
+        dialect: Any = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    rows = [r for r in csv.reader(io.StringIO(text), dialect) if any(c.strip() for c in r)]
     return ParsedDocument(
         title=_title(filename), blocks=[Block("table", _render_table(rows), rows=rows)], mime="text/csv", parser="csv"
     )
@@ -390,7 +443,7 @@ def _html(html: str, filename: str) -> ParsedDocument:
         else:
             text = el.get_text(" ", strip=True)
             if text:
-                hidden = "display:none" in (el.get("style") or "").replace(" ", "") or el.has_attr("hidden")
+                hidden = _hidden(el)
                 b = Block("list" if el.name == "li" else "paragraph", text, heading_path=list(path))
                 if hidden:
                     b.confidence = 0.5  # hidden text is a classic injection carrier; flag it

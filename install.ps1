@@ -99,6 +99,7 @@ if ((Test-Path .env) -and -not $Reconfigure) {
     $lines += "TEI_IMAGE=ghcr.io/huggingface/text-embeddings-inference:$tei"
     $lines += "POSTGRES_PASSWORD=$pg"
     $lines += "SEARXNG_SECRET=" + (-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | ForEach-Object { [char]$_ }))
+    $lines += "SMRITI_SANDBOX_TOKEN=" + (-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | ForEach-Object { [char]$_ }))
     [System.IO.File]::WriteAllLines((Join-Path $PSScriptRoot ".env"), $lines, (New-Object System.Text.UTF8Encoding($false)))
     Say "wrote .env for profile '$Tier'"
 }

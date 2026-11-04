@@ -57,6 +57,7 @@ services:
       SMRITI_SELF_URL: http://smriti-api:8000
       SMRITI_SANDBOX_URL: ${SMRITI_SANDBOX_URL:-http://sandbox:8080}
       SMRITI_SCHEDULER: "0"
+      SMRITI_PUBLISH_BIND: ${SMRITI_BIND:-127.0.0.1}
     ports: ["${SMRITI_BIND:-127.0.0.1}:${SMRITI_PORT:-8000}:8000"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -90,14 +91,14 @@ services:
     mem_limit: ${SANDBOX_MEMORY:-1g}
     pids_limit: 256
     cpus: ${SANDBOX_CPUS:-1.0}
-    environment: {HOME: /tmp, TMPDIR: /tmp}
+    environment: {HOME: /tmp, TMPDIR: /tmp, SMRITI_SANDBOX_TOKEN: "${SMRITI_SANDBOX_TOKEN:-}"}
     depends_on:
       smriti-init: {condition: service_completed_successfully}
     restart: unless-stopped
 
   searxng:
     profiles: ["search"]
-    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}   # pin a dated tag for production
+    image: ${SEARXNG_IMAGE:-searxng/searxng:2026.10.19-81371861f@sha256:5ed0323b5f5f8701264ef65e239a2bd83cb57098f2b971fa30bf79c06eeae271}
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-}   # written by the installer
       SEARXNG_BASE_URL: http://searxng:8080/
@@ -107,7 +108,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16.4-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c}
     environment:
       POSTGRES_USER: smriti
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smriti}
@@ -122,7 +123,7 @@ services:
     restart: unless-stopped
 
   qdrant:
-    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.20.0}
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2}
     environment:
       QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
     volumes: ["qdrant-data:/qdrant/storage"]
@@ -130,7 +131,7 @@ services:
 
   llm:
     profiles: ["llm"]
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.32.0}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34}
     entrypoint: ["bash", "/smriti/vllm-entrypoint.sh"]
     env_file: .env
     environment:
@@ -178,7 +179,7 @@ services:
 
   embed-cpu:
     profiles: ["cpu-encoders"]
-    image: ${TEI_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    image: ${TEI_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d}
     command: ["--model-id", "${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}", "--max-batch-tokens", "${EMBED_MAX_BATCH_TOKENS:-4096}", "--max-client-batch-size", "32"]
     environment: {HF_TOKEN: "${HF_TOKEN:-}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"}
     volumes: ["hf-cache:/data"]
@@ -187,7 +188,7 @@ services:
 
   rerank-cpu:
     profiles: ["cpu-rerank"]
-    image: ${TEI_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    image: ${TEI_CPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d}
     command: ["--model-id", "${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}", "--max-batch-tokens", "${RERANK_MAX_BATCH_TOKENS:-4096}", "--max-client-batch-size", "32"]
     environment: {HF_TOKEN: "${HF_TOKEN:-}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"}
     volumes: ["hf-cache:/data"]

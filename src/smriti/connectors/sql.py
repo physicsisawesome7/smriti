@@ -20,6 +20,7 @@ Drivers: PostgreSQL (psycopg) and SQLite are built in; MySQL/MariaDB with
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 from collections.abc import Iterator
@@ -203,7 +204,11 @@ class DatabaseConnector(Connector):
         only = [c.strip() for c in (self.cfg.get("text_columns") or "").split(",") if c.strip()]
         for r in rows:
             rec = dict(zip(cols, r, strict=False))
-            rid = _cell(rec.get(idc)) if idc in rec else str(hash(tuple(_cell(v) for v in r)))
+            rid = (
+                _cell(rec.get(idc))
+                if idc in rec
+                else hashlib.sha256("\x1f".join(_cell(v) for v in r).encode()).hexdigest()[:16]
+            )
             title = _cell(rec.get(tc)) if tc in rec and rec.get(tc) else f"Row {rid}"
             lines = [f"# {title}", ""]
             for c in only or cols:

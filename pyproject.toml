@@ -12,7 +12,7 @@ license = "Apache-2.0"
 authors = [{ name = "Safearly" }]
 dependencies = [
   # Saaf (India-first PII masking) from its public repo until it is on PyPI
-  "saaf @ git+https://github.com/physicsisawesome7/Saaf@main#subdirectory=packages/saaf-core",
+  "saaf @ git+https://github.com/physicsisawesome7/Saaf@838039ca836af71a780aadaa49a70d4171095bb6#subdirectory=packages/saaf-core",
   "fastapi>=0.110",
   "uvicorn>=0.29",
   "python-multipart>=0.0.9",

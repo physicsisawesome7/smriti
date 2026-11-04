@@ -92,7 +92,10 @@ def test_incremental_reingest_reuses_unchanged_chunks(tenant):
     b = tenant.ingest(body.replace(b"Second clause stays", b"Second clause changed"), "probe.md", actor="test")
     assert a["version"] == 1 and b["version"] == 2
     assert b["chunks_unchanged"] == 1 and b["chunks_added"] == 1 and b["chunks_retired"] == 1
-    assert tenant.ingest(body, "probe-copy.md", actor="test")["status"] == "duplicate"
+    current = body.replace(b"Second clause stays", b"Second clause changed")
+    assert tenant.ingest(current, "probe-copy.md", actor="test")["status"] == "duplicate"
+    # reverting to the earlier text is new content, not a duplicate of a retired version
+    assert tenant.ingest(body, "probe.md", actor="test")["version"] == 3
 
 
 def test_audit_chain_detects_tampering(tenant):

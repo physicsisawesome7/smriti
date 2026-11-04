@@ -31,7 +31,14 @@ from .privacy import ConversationMasker
 from .store import normalise_ref, traces
 
 ROUTES = [
-    ("table", re.compile(r"\b(total|sum|how many|count of|aggregate|add up)\b|कुल|योग", re.I)),
+    (
+        "table",
+        re.compile(
+            r"\b(total|sum|count of|aggregate|add up)\b"
+            r"|\bhow many\b(?!\s+(?:days?|weeks?|months?|years?|hours?|minutes?|times?|percent)\b)|कुल|योग",
+            re.I,
+        ),
+    ),
     (
         "compare",
         re.compile(
@@ -76,7 +83,12 @@ class AnswerCache:
 
     @staticmethod
     def ids(q: str) -> frozenset[str]:
-        return frozenset(re.findall(r"[A-Za-z]*[-/]?\d[\w./-]*", q.upper()))
+        from .guardrails import negated
+
+        ids = set(re.findall(r"[A-Za-z]*[-/]?\d[\w./-]*", q.upper()))
+        if negated(q):  # "who is liable" and "who is not liable" never share an answer
+            ids.add("¬")
+        return frozenset(ids)
 
     def get(self, key: str, q: str, vec: Any, threshold: float, ttl: float) -> dict[str, Any] | None:
         now, nq, ids = time.time(), self.norm(q), self.ids(q)
@@ -153,7 +165,7 @@ def _prepare(
     """``doc_ids`` narrows retrieval to an agent's sources (never widens access)."""
     t0 = time.perf_counter()
     trace_id = uuid.uuid4().hex[:16]
-    question = question.strip()
+    question = question.replace("\x00", "").strip()
     if not as_of:
         m = AS_OF.search(question)
         if m:
@@ -189,7 +201,7 @@ def _prepare(
 
     gen = t.pack.config.generation
     scope = hashlib.sha256("|".join(sorted(doc_ids)).encode()).hexdigest()[:12] if doc_ids is not None else ""
-    key = f"{p.access_key}|{t.generation}|{as_of}|{skill or ''}|{scope}"
+    key = f"{t.id}|{p.access_key}|{t.generation}|{as_of}|{skill or ''}|{scope}"
     te = time.perf_counter()
     qvec = t.query_vector(question)  # computed once: used by the cache and by retrieval
     embed_ms = round((time.perf_counter() - te) * 1000, 1)
@@ -270,7 +282,7 @@ def _prepare(
                 role_prompt,
                 skill,
                 as_of,
-                history,
+                clean_history(t, masker, history, events),
                 qtokens=qtokens,
                 context_tokens=gen.context_tokens,
             )
@@ -402,6 +414,22 @@ def _prepare(
     )
     _trace(t, p, trace_id, masked_q, res, rtrace)
     yield {"event": "final", "data": res}
+
+
+def clean_history(
+    t: Tenant, masker: ConversationMasker, history: list[dict[str, str]] | None, events: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Earlier turns reach the model under the same rules as the question: user turns
+    pass the input guard (a blocked turn is dropped) and every turn is PII-masked."""
+    out = []
+    for h in (history or [])[-4:]:
+        if h.get("role") not in ("user", "assistant") or not isinstance(h.get("content"), str):
+            continue
+        if h["role"] == "user" and not t.guard.check_input(h["content"]).allowed:
+            events.append({"layer": "input", "check": "history", "result": "an earlier turn was blocked and left out"})
+            continue
+        out.append({"role": h["role"], "content": masker.mask(h["content"][:1500])[0]})
+    return out
 
 
 def _scope_ids(doc_ids: list[str] | None) -> list[str] | None:

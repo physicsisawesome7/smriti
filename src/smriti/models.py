@@ -16,10 +16,20 @@ DOC_CLASSES = ["public", "internal", "confidential", "secret"]
 
 
 def class_rank(doc_class: str) -> int:
+    """Rank of a document's class. An unknown class is the most restricted."""
     try:
-        return DOC_CLASSES.index(doc_class)
+        return DOC_CLASSES.index(str(doc_class or "").strip().lower())
     except ValueError:
-        return len(DOC_CLASSES)  # unknown classes are treated as the most restricted
+        return len(DOC_CLASSES)
+
+
+def clearance_rank(clearance: str) -> int:
+    """Rank of a person's clearance. An unknown or misspelled clearance grants nothing:
+    it must never rank as "most restricted" and so read everything."""
+    try:
+        return DOC_CLASSES.index(str(clearance or "").strip().lower())
+    except ValueError:
+        return -1
 
 
 @dataclass
@@ -80,7 +90,7 @@ class Access:
     def from_dict(cls, d: dict[str, Any] | None) -> Access:
         d = d or {}
         return cls(
-            doc_class=d.get("doc_class", "internal"),
+            doc_class=str(d.get("doc_class") or "internal").strip().lower(),
             divisions=list(d.get("divisions") or ["*"]),
             projects=list(d.get("projects") or []),
             groups=list(d.get("groups") or []),

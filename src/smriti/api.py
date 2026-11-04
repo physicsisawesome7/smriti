@@ -10,6 +10,7 @@ Qdrant).
 from __future__ import annotations
 
 import difflib
+import hmac
 import json
 import os
 import random
@@ -41,6 +42,25 @@ from .store import Store, feedback, ingest_jobs, make_blob_store, traces
 from .store import connectors as connectors_t
 
 WEB_DIR = Path(__file__).parent / "web"
+
+
+def read_capped(file: Any, limit_mb: int | None = None) -> bytes:
+    """Read an upload without ever holding more than the size limit in memory."""
+    from .engine import MAX_FILE_MB
+
+    limit = (limit_mb or MAX_FILE_MB) * 1024 * 1024
+    data = file.file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, f"{getattr(file, 'filename', 'file')}: larger than {limit // 2**20} MB")
+    return data
+
+
+def content_disposition(filename: str) -> str:
+    """An attachment header that survives non-ASCII names (RFC 6266 / RFC 5987)."""
+    from urllib.parse import quote
+
+    ascii_name = "".join(ch if 32 <= ord(ch) < 127 and ch not in '"\\' else "_" for ch in filename) or "download"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 class AskBody(BaseModel):
@@ -137,6 +157,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.platform = plat
     demo_mcp = demo.mount(app)
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Response:
+        resp = await call_next(request)
+        path = request.url.path
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+        if not path.startswith(("/api/widget/", "/widget.js", "/demo-")):
+            resp.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            )
+            resp.headers.setdefault("X-Frame-Options", "DENY")
+        return resp
+
     # ------------------------------------------------------------ identity
 
     def ctx(
@@ -144,6 +179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         x_smriti_user: str | None = Header(default=None),
         x_smriti_tenant: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
+        default_user: bool = False,
     ) -> tuple[Tenant, Principal]:
         t = plat.tenant(x_smriti_tenant or request.query_params.get("tenant"))
         user = None
@@ -151,19 +187,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(403, "agent API keys work only on /api/agents/{id}/chat and /v1/chat/completions")
         if settings.auth_mode == "token":
             tok = (authorization or "").removeprefix("Bearer ").strip()
-            user = settings.api_tokens.get(tok)
-            if not user:
+            bound = settings.api_tokens.get(tok) if tok else None
+            if not bound:
                 raise HTTPException(401, "invalid or missing bearer token")
+            tenant_id, _, user = bound.rpartition(":")
+            if tenant_id and tenant_id != t.id:
+                raise HTTPException(401, "this token is for another tenant")
         else:  # demo directory: the web app's "view as" switcher sets this header
-            user = (
-                x_smriti_user
-                or request.query_params.get("as")
-                or (t.pack.roles.users[0].id if t.pack.roles.users else None)
-            )
+            user = x_smriti_user or request.query_params.get("as")
+            if not user and default_user and t.pack.roles.users:
+                user = t.pack.roles.users[0].id  # only /api/whoami picks someone for a first visit
+            if not user:
+                raise HTTPException(401, "no user: send X-Smriti-User (demo mode) or sign in")
         try:
             return t, t.principal(user or "")
         except UnknownUser:
             raise HTTPException(401, f"unknown user {user}") from None
+
+    def whoami_ctx(
+        request: Request,
+        x_smriti_user: str | None = Header(default=None),
+        x_smriti_tenant: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> tuple[Tenant, Principal]:
+        return ctx(request, x_smriti_user, x_smriti_tenant, authorization, default_user=True)
+
+    def ops_access(request: Request, authorization: str | None, x_smriti_user: str | None) -> None:
+        """Metrics and deep health: a metrics token, or a person with audit or administer."""
+        tok = (authorization or "").removeprefix("Bearer ").strip()
+        want = os.environ.get("SMRITI_METRICS_TOKEN", "")
+        if want and tok and hmac.compare_digest(tok, want):
+            return
+        _, p = ctx(request, x_smriti_user, None, authorization)
+        need(p, "audit", "administer")
 
     def need(p: Principal, *grants: str) -> None:
         if not any(p.can(g) for g in grants):
@@ -172,10 +228,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------ meta
 
     @app.get("/api/health")
-    def health(deep: bool = False) -> Any:
-        """Liveness; with ?deep=1, readiness of the database and every model server."""
-        out: dict[str, Any] = {"ok": True, "version": __version__, "tenants": list(plat.tenants)}
+    def health(
+        request: Request,
+        deep: bool = False,
+        authorization: str | None = Header(default=None),
+        x_smriti_user: str | None = Header(default=None),
+    ) -> Any:
+        """Liveness; with ?deep=1 (metrics token, or audit/administer), readiness of every dependency."""
+        out: dict[str, Any] = {"ok": True, "version": __version__}
         if deep:
+            ops_access(request, authorization, x_smriti_user)
+            out["tenants"] = list(plat.tenants)
             checks: dict[str, str] = {}
             try:
                 plat.store.count(traces)
@@ -216,12 +279,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return m
 
     @app.get("/api/metrics.json")
-    def metrics_json() -> dict[str, Any]:
+    def metrics_json(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        x_smriti_user: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        ops_access(request, authorization, x_smriti_user)
         return _metrics()
 
     @app.get("/api/metrics", response_class=Response)
-    def metrics() -> Response:
-        """Prometheus exposition. Per-process counters; sum across API workers."""
+    def metrics(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        x_smriti_user: str | None = Header(default=None),
+    ) -> Response:
+        """Prometheus exposition (bearer SMRITI_METRICS_TOKEN). Per-process counters; sum across API workers."""
+        ops_access(request, authorization, x_smriti_user)
         lines = []
         for k, v in _metrics().items():
             kind = "gauge" if k == "chunks_indexed" else "counter"
@@ -229,7 +302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     @app.get("/api/whoami")
-    def whoami(c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+    def whoami(c: tuple[Tenant, Principal] = Depends(whoami_ctx)) -> dict[str, Any]:
         t, p = c
         return {
             "tenant": {"id": t.id, "name": t.pack.config.name},
@@ -247,6 +320,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "directory": [{"id": u.id, "name": u.name, "title": u.title, "roles": u.roles} for u in t.pack.roles.users]
             if settings.auth_mode == "demo"
             else [],
+            "demo": settings.auth_mode == "demo",
         }
 
     @app.get("/api/stats")
@@ -263,7 +337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "models": t.gw.describe()
             | {"embedder": t.embedder.name, "reranker": t.reranker.name, "vector_backend": settings.vector_backend},
             "usage": t.gw.usage.__dict__,
-            "audit_records": t.audit.verify()["records"] if p.can("audit") or p.can("administer") else None,
+            "audit_records": t.audit.count() if p.can("audit") or p.can("administer") else None,
         }
 
     # ------------------------------------------------------------ ask
@@ -467,7 +541,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(
             t.blobs.get(v["blob_key"]),
             media_type=v["mime"] if "/" in (v["mime"] or "") else "application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{v["filename"]}"'},
+            headers={"Content-Disposition": content_disposition(v["filename"] or f"{doc_id}.bin")},
         )
 
     @app.get("/api/documents/{doc_id}/access")
@@ -477,10 +551,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if user != p.user_id:
             need(p, "administer", "audit", "curate")
         d = t.store.get_document(t.id, doc_id)
-        if not d:
-            raise HTTPException(404)
-        dec = t.authz.explain(t.principal(user), d)
+        # without an oversight grant, a hidden document answers exactly like a missing one
+        oversight = p.can("administer") or p.can("audit") or p.can("curate")
+        if not d or (not oversight and not evaluate(p, d["access"], d["doc_type"]).allowed):
+            raise HTTPException(404, "not found")
+        try:
+            who = t.principal(user)
+        except UnknownUser:
+            raise HTTPException(404, f"unknown user {user}") from None
+        dec = t.authz.explain(who, d)
         return {"user": user, "doc_id": doc_id, "allowed": dec.allowed, "reasons": dec.reasons}
+
+    @app.delete("/api/documents/{doc_id}")
+    def api_doc_delete(doc_id: str, reason: str = "", c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        """Tombstone a document: it stops appearing in answers; versions stay for audit."""
+        t, p = c
+        need(p, "curate", "administer")
+        d = t.store.get_document(t.id, doc_id)
+        if not d or d["status"] == "tombstoned":
+            raise HTTPException(404, "not found")
+        t.tombstone(doc_id, p.user_id, reason or "removed by a curator")
+        return {"doc_id": doc_id, "status": "tombstoned"}
+
+    @app.get("/api/relations")
+    def api_relations(status: str = "proposed", c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
+        """Supersessions and amendments waiting for a curator (found in uploads and crawled pages)."""
+        t, p = c
+        need(p, "curate", "administer")
+        if status not in ("proposed", "approved", "rejected", "auto"):
+            raise HTTPException(400, "status must be proposed, approved, rejected or auto")
+        out = []
+        for r in t.store.all_relations(t.id, status=status):
+            src = t.store.get_document(t.id, r["src_doc"])
+            dst = t.store.get_document(t.id, r["dst_doc"]) if r["dst_doc"] else None
+            out.append(
+                {
+                    **r,
+                    "src_title": src["title"] if src else r["src_doc"],
+                    "dst_title": dst["title"] if dst else r["dst_ref"],
+                }
+            )
+        return out
+
+    @app.post("/api/relations/{rid}")
+    def api_relation_review(rid: int, approve: bool, c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
+        t, p = c
+        need(p, "curate", "administer")
+        try:
+            return t.review_relation(rid, approve, p.user_id)
+        except KeyError:
+            raise HTTPException(404, "no such relation") from None
 
     @app.post("/api/documents")
     def api_upload(
@@ -494,7 +614,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         t, p = c
         need(p, "upload")
-        data = file.file.read()
+        data = read_capped(file)
         hints: dict[str, Any] = {
             "access": {
                 "doc_class": doc_class,
@@ -506,7 +626,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if doc_type:
             hints["doc_type"] = doc_type
         try:
-            return t.ingest(data, file.filename or "upload.bin", actor=p.user_id, hints=hints)
+            trust = "curator" if p.can("curate") or p.can("administer") else "content"
+            return t.ingest(data, file.filename or "upload.bin", actor=p.user_id, hints=hints, trust=trust)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
@@ -514,7 +635,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/sources")
     def api_sources(c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
-        t, _ = c
+        t, p = c
+        need(p, "curate", "administer", "audit")
         return watch.source_health(t)
 
     @app.post("/api/sources/{name}/run")
@@ -550,6 +672,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/connectors/presets")
     def api_connector_presets(c: tuple[Tenant, Principal] = Depends(ctx)) -> list[dict[str, Any]]:
         """Ready-made sources pointing at the built-in demo targets, as the server reaches them."""
+        need(c[1], "curate", "administer")
         base = (os.environ.get("SMRITI_SELF_URL") or settings.public_base_url).rstrip("/")
         imports = (settings.data_dir / "imports").resolve()
         db = (imports / "db" / "works.db").as_posix()
@@ -725,7 +848,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         need(p, "upload")
         stored = []
         for f in files:
-            data = f.file.read()
+            data = read_capped(f)
             if not data:
                 continue
             if len(data) > 200 * 1024 * 1024:
@@ -848,7 +971,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/policy")
     def api_policy(c: tuple[Tenant, Principal] = Depends(ctx)) -> dict[str, Any]:
-        t, _ = c
+        t, p = c
+        need(p, "curate", "administer", "audit")
         return {
             "guardrails": t.pack.guardrails,
             "roles": {k: v.model_dump() for k, v in t.pack.roles.roles.items()},
@@ -878,7 +1002,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """'View as user X': which documents X would retrieve for a query, and why others are hidden."""
         t, p = c
         need(p, "administer", "audit", "curate")
-        target = t.principal(user)
+        try:
+            target = t.principal(user)
+        except UnknownUser:
+            raise HTTPException(404, f"unknown user {user}") from None
         ps, _ = t.retrieve(target, q, include_superseded=True)
         seen = {x.doc_id for x in ps}
         hidden = []

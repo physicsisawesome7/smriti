@@ -95,6 +95,7 @@ else
     echo "TEI_IMAGE=ghcr.io/huggingface/text-embeddings-inference:${TEI_TAG}"
     echo "POSTGRES_PASSWORD=${PG_PASS}"
     echo "SEARXNG_SECRET=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
+    echo "SMRITI_SANDBOX_TOKEN=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
   } > .env
   say "wrote .env for profile '$PROFILE'"
 fi

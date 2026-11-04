@@ -130,9 +130,15 @@ def save(t: Any, p: Principal, body: dict[str, Any], agent_id: str | None = None
         raise PermissionError("sharing an agent needs the curate or administer grant")
     for ref in norm["config"]["tools"]:
         if ref.startswith("tool:"):
-            tool_row(t, int(ref[5:]))  # must exist in this tenant
+            row = tool_row(t, int(ref[5:]))  # must exist in this tenant
+            cfg = json.loads(row["config"] or "{}")
+            roles = [r.strip() for r in str(cfg.get("allowed_roles") or "").split(",") if r.strip()]
+            if not (p.can("curate") or p.can("administer") or set(roles) & set(p.roles)):
+                raise PermissionError(f"you are not allowed to use the tool '{row['name']}'")
     schedule = (body.get("schedule") or "").strip() or None
-    if schedule and len(schedule.split()) != 5:
+    from ..watch import valid_cron
+
+    if schedule and not valid_cron(schedule):
         raise AgentError("schedule must be a 5-field cron expression")
     status = body.get("status", "draft") if body.get("status") in ("draft", "published") else "draft"
     now = time.time()
@@ -286,6 +292,8 @@ def make_tool(t: Any, p: Principal, ref: str, box: Any, **ctx_kw: Any) -> Tool:
     if ref in BUILTIN:
         return BUILTIN[ref](ToolCtx(tenant=t, principal=p, name=BUILTIN[ref].label, **ctx_kw))
     row = tool_row(t, int(ref.split(":", 1)[1]))
+    if not row["enabled"]:
+        raise ValueError(f"tool {row['name']} is switched off")
     cls = CONFIGURABLE[row["kind"]]
     return cls(
         ToolCtx(
@@ -301,9 +309,23 @@ def make_tool(t: Any, p: Principal, ref: str, box: Any, **ctx_kw: Any) -> Tool:
     )
 
 
-def tool_allowed(p: Principal, tool: Tool) -> bool:
+def tool_allowed(p: Principal, tool: Tool, agent: dict[str, Any] | None = None) -> bool:
+    """Who may run a tool.
+
+    Built-in tools follow their own grants (code execution needs ``execute_code``).
+    A connected tool holds credentials, so it is denied by default: it runs for the
+    roles it lists, or, when it lists none, only for curators and inside agents a
+    curator has published."""
+    if tool.kind == "code":
+        return p.can("execute_code") or p.can("administer")
+    if not tool.configurable:
+        return True
     roles = [r.strip() for r in str(tool.cfg.get("allowed_roles") or "").split(",") if r.strip()]
-    return not roles or bool(set(roles) & set(p.roles))
+    if roles:
+        return bool(set(roles) & set(p.roles))
+    if p.can("curate") or p.can("administer"):
+        return True
+    return bool(agent and agent.get("status") == "published" and agent.get("published_by_curator"))
 
 
 def save_tool(t: Any, p: Principal, box: Any, body: dict[str, Any], tid: int | None = None) -> dict[str, Any]:

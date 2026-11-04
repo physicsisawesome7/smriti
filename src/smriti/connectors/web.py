@@ -123,9 +123,12 @@ class WebsiteConnector(Connector):
             try:
                 r = self.polite_get(url, min_interval=interval, respect_robots=robots)
             except ConnectorError as e:
+                self.errors += 1
                 self.ctx.log(f"skip {url}: {e}")
                 continue
             if r.status_code >= 400:
+                if r.status_code not in (404, 410) or depth == 0:
+                    self.errors += 1  # only a confirmed 404/410 below the start page is a real removal
                 self.ctx.log(f"skip {url}: HTTP {r.status_code}")
                 continue
             ctype = (r.headers.get("content-type") or "").split(";")[0].lower()

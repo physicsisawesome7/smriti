@@ -8,7 +8,7 @@ function canManage() { return can("curate") || can("administer"); }
 function stopPolling() { if (ING.pollTimer) { clearInterval(ING.pollTimer); ING.pollTimer = null; } }
 function fmtBytes(n) { if (n == null) return ""; const u = ["B", "KB", "MB", "GB"]; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; }
 function fmtDur(a, b) { if (!a) return ""; const s = Math.max(0, (b || Date.now() / 1000) - a); return s < 60 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)} m ${Math.round(s % 60)} s`; }
-const JOB_CLS = { done: "ok", failed: "bad", running: "violet", queued: "neutral", cancelling: "warn", cancelled: "neutral" };
+const JOB_CLS = { done: "ok", partial: "warn", failed: "bad", running: "violet", queued: "neutral", cancelling: "warn", cancelled: "neutral" };
 
 async function viewIngest() {
   stopPolling();

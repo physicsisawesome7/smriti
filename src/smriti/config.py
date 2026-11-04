@@ -56,9 +56,9 @@ class Settings:
         )
         tokens: dict[str, str] = {}
         for pair in os.environ.get("SMRITI_API_TOKENS", "").split(","):
-            if ":" in pair:
-                tok, user = pair.split(":", 1)
-                tokens[tok.strip()] = user.strip()
+            if ":" in pair:  # token:user, or token:tenant:user to bind the token to one tenant
+                tok, rest = pair.split(":", 1)
+                tokens[tok.strip()] = rest.strip()
         s = cls(
             data_dir=data_dir,
             database_url=os.environ.get("SMRITI_DATABASE_URL", f"sqlite:///{(data_dir / 'smriti.db').as_posix()}"),

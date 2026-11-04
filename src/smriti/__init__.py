@@ -7,4 +7,4 @@ authoriser) sits behind an interface so a pilot runs on one laptop and a
 production install runs on Postgres, Qdrant and vLLM with the same code.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

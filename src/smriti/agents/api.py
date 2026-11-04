@@ -219,7 +219,9 @@ def mount(
     def runs_approve(
         run_id: str, approve: bool, stream: bool = True, c: tuple[Any, Principal, Any] = Depends(key_or_user)
     ) -> Any:
-        t, p, _k = c
+        t, p, k = c
+        if k is not None:
+            raise HTTPException(403, "approvals need a signed-in person, not an API key")
         errors(lambda: rt.Run.load(t, p, box, run_id))
         events = rt.approve(t, p, box, run_id, approve)
         return sse(events) if stream else errors(lambda: rt.run_sync(events))
@@ -266,12 +268,13 @@ def mount(
         if not rows or rows[0]["user_id"] != p.user_id:
             raise HTTPException(404, "no such file")
         a = rows[0]
-        safe = a["filename"].replace('"', "")
+        from ..api import content_disposition
+
         # downloads only: an agent-written HTML file never runs in Smriti's origin
         return Response(
             t.blobs.get(a["blob_key"]),
             media_type=a["mime"] if not a["mime"].startswith("text/html") else "text/plain",
-            headers={"Content-Disposition": f'attachment; filename="{safe}"', "X-Content-Type-Options": "nosniff"},
+            headers={"Content-Disposition": content_disposition(a["filename"]), "X-Content-Type-Options": "nosniff"},
         )
 
     # ------------------------------------------------------------ tools
