@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: Who is stuck, and what are they trying to do? Describe the problem before the solution.
+      placeholder: Officers cannot tell which circular changed clause 16.1 last month.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+  - type: checkboxes
+    id: promises
+    attributes:
+      label: Smriti's promises
+      description: A feature should keep these. Tick the ones you have thought about.
+      options:
+        - label: Nobody sees what they are not allowed to see
+        - label: Every sentence in an answer stays backed by a cited source
+        - label: An old version is never quoted as current

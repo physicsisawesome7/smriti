@@ -49,6 +49,7 @@ Signing a user on your server:
 
 ```python
 import hashlib, hmac, time
+
 exp = int(time.time()) + 3600
 sig = hmac.new(SIGNING_KEY.encode(), f"{user_id}.{exp}".encode(), hashlib.sha256).hexdigest()
 token = f"{user_id}.{exp}.{sig}"

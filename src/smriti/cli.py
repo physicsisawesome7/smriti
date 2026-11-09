@@ -68,6 +68,9 @@ def seed(plat: Any, tenant_id: str | None = None) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="smriti", description="Smriti by Safearly: institutional memory")
+    from . import __version__
+
+    ap.add_argument("--version", action="version", version=f"smriti {__version__}")
     ap.add_argument("--data-dir", help="where the database, blobs and caches live (default ./data or $SMRITI_DATA_DIR)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("serve")

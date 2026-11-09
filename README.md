@@ -1,22 +1,75 @@
-# Smriti by Safearly
+<div align="center">
 
-**Permission-aware institutional memory.** Smriti (स्मृति, "memory") reads an organisation's own documents and the government sites it depends on. It keeps them fresh and versioned, and answers questions with verified citations. It runs on open-weight models the customer hosts, or on no model at all.
+<a href="https://safearly.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo.svg" alt="Smriti by Safearly" width="320">
+  </picture>
+</a>
 
-It is an implementation of the *Institutional Memory Platform: Development Plan* (29 Oct 2026). The MVP modules are Connect, Parse, Remember, Ask and Govern. It also ships parts of Watch, Act, Operate and Configure, plus the Indian Railways vertical pack.
+### Private AI agents and workflows that cite their sources
 
-**One-click, on one consumer GPU** (Docker; picks a profile for 6, 12, 16 or 24 GB cards, or CPU only):
+Open-source institutional memory. Smriti (स्मृति, "memory") connects an organisation's documents, sites, APIs and databases,<br>
+and answers with **checked citations**, **as the person asking**, using **the version in force on any date**, on **your own hardware**.
+
+[![CI](https://github.com/physicsisawesome7/smriti/actions/workflows/ci.yml/badge.svg)](https://github.com/physicsisawesome7/smriti/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/physicsisawesome7/smriti/actions/workflows/codeql.yml/badge.svg)](https://github.com/physicsisawesome7/smriti/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/badge/release-v0.2.0-6D28D9)](CHANGELOG.md)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-0A0A0A)](LICENSE)
+[![Python 3.11–3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/physicsisawesome7/smriti/pkgs/container/smriti)
+
+[**Website**](https://safearly.com) ·
+[**Docs**](https://safearly.com/docs/quickstart) ·
+[**Quickstart**](#quickstart) ·
+[**Roadmap**](docs/roadmap.md) ·
+[**Changelog**](CHANGELOG.md) ·
+[**LinkedIn**](https://www.linkedin.com/company/safeary.ai/) ·
+[**Contact**](mailto:lalit@safearly.com)
+
+<img src="docs/assets/screenshots/ask.png" alt="Smriti answering a question about liquidated damages: the answer cites the correction slip in force, every sentence is verified, and the evidence panel shows each passage with its version and access class" width="900">
+
+</div>
+
+## Why Smriti
+
+Most AI search tools quote whatever they find. In an office that runs on circulars, contracts and amendments, that is how a superseded rule, a document someone was never cleared to read, or a made-up number ends up in an official note. Smriti is built so those three things cannot happen silently:
+
+| | |
+|---|---|
+| 🔐 **Acts as the person asking** | Access is enforced twice, inside the search and again before anything reaches the model. Agents, shared links, chat apps and API keys never see more than the person behind them. A leakage suite runs in CI. |
+| ✅ **Checks every sentence** | Each sentence must be backed by the passage it cites, numbers included. If the sources don't support an answer, Smriti says so instead of guessing. |
+| 🗓️ **Knows which version is in force** | Supersession and amendment chains are tracked, so "as of 1 June 2024" gives the rule in force that day, and a correction slip is never missed. |
+| 🇮🇳 **Private and India-first** | Runs air-gapped on one consumer GPU, or with no model at all. Aadhaar, PAN and other personal data is masked by role ([Saaf](https://github.com/physicsisawesome7/Saaf)). English and Hindi. |
+| 🤖 **Agents and workflows** | Classic, agentic and research agents; tools for APIs, MCP servers, SQL and a code sandbox; visual workflows with human approval; widget, Slack, Telegram and Discord. |
+| 📜 **Auditable** | Hash-chained audit log, release gates, role simulator and maker-checker drafts. |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/agents.png" alt="Agents view with published agents and templates"><br><sub><b>Agents</b>: build, test, share and call them through an API.</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/library.png" alt="Library view listing documents with versions and access"><br><sub><b>Library</b>: versions, diffs, supersession and "why can't X see this".</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/ingest.png" alt="Ingest view with connector types"><br><sub><b>Ingest</b>: websites, uploads, APIs, databases, MCP servers and feeds.</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/govern.png" alt="Govern view with release gates and a verified audit chain"><br><sub><b>Govern</b>: release gates, hash-chained audit and model policy.</sub></td>
+  </tr>
+</table>
+
+## Quickstart
+
+**One command, on one consumer GPU or CPU only.** The installer detects your hardware and picks a profile for 6, 12, 16 or 24 GB cards.
 
 ```bash
 git clone https://github.com/physicsisawesome7/smriti && cd smriti
 ./install.sh                                   # Linux / WSL2 / macOS
 ```
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
+powershell -ExecutionPolicy Bypass -File install.ps1   # Windows (Docker Desktop, WSL2)
 ```
 
-This runs vLLM (Qwen3 AWQ), TEI (Qwen3-Embedding, bge-reranker-v2-m3), PostgreSQL, Qdrant, the API and a crawler worker. See [deploy/README.md](deploy/README.md) for profiles, VRAM budgets, tuning and troubleshooting.
+This runs vLLM (Qwen3 AWQ), TEI encoders, PostgreSQL, Qdrant, the API, a crawler worker and an isolated code sandbox. Open <http://127.0.0.1:8000>. See [deploy/README.md](deploy/README.md) for profiles, VRAM budgets, tuning and troubleshooting.
 
-**Without Docker** (development, or no GPU): Python 3.11+.
+**Without Docker** (development, or no GPU), with Python 3.11+:
 
 ```bash
 pip install -e ".[dev]"                   # installs Saaf from github.com/physicsisawesome7/Saaf
@@ -24,7 +77,12 @@ smriti --data-dir data serve --seed       # http://127.0.0.1:8000, demo tenant s
 pytest -q                                 # unit tests plus the release gates
 ```
 
-Open the app, pick a person under **Viewing as**, and ask *"What is the period for submitting the performance guarantee under clause 16.1?"*. Then ask it again *as of 2024-06-01*. Switch to Asha and ask about the P-17 land schedule, or to Vikram (who sees it with owners masked) and Rakesh (who sees owners unmasked). Every document in the demo is **synthetic**.
+**Try it:**
+1. Pick a person under **Viewing as** and ask *"What is the period for submitting the performance guarantee under clause 16.1?"*.
+2. Ask it again *as of 2024-06-01* to get the rule in force that day.
+3. Switch to Asha and ask about the P-17 land schedule. Then try Vikram (owners masked) and Rakesh (owners unmasked).
+
+Links open views directly, for example `/#agents` or `/?q=your+question#ask`. Every document in the demo is **synthetic**.
 
 ## What is different
 
@@ -56,22 +114,7 @@ These numbers come from a small synthetic corpus with the built-in offline compo
 
 ## Architecture
 
-```
-            ┌──────────── Watch (site adapters, file drops, RSS) ─────────────┐
-            │  robots.txt · rate limits · conditional GET · change detection   │
-            ▼                                                                  │
- files ──► Parse (router: PDF, Word, Excel, HTML, email, ZIP; garble/OCR flags) │
-            ▼                                                                  │
-         Remember: immutable blobs ─ Postgres/SQLite (docs, versions, chunks,  │
-                   relations, tables, audit) ─ index (local or Qdrant)         │
-            ▼                                                                  │
- question ► guard input (injection, Saaf PII) ► expand (glossary, Hindi)        │
-            ► hybrid search with the access filter ► bulk re-check             │
-            ► version rules + amendments ► rerank ► table maths / generate     │
-            ► verify citations and numbers ► answer or abstain ► trace + audit │
-            ▼                                                                  │
-         Act: skills (extract → coded rules → explain) · drafts · approvals ◄──┘
-```
+<img src="docs/assets/architecture.svg" alt="Sources flow through ingestion (parse, version, mask, chunk, embed) into PostgreSQL, Qdrant and a blob store. Questions go through the answer pipeline: input guard, hybrid search inside the asker's access, a second access check, version rules, rerank, sentence verification, then an answer with citations or an abstention. Models, governance and interfaces sit alongside." width="100%">
 
 | Concern | Built in (offline, zero GPUs) | Production (same code, set in `tenant.yaml` or env) |
 |---|---|---|
@@ -141,3 +184,32 @@ The GPU budget comes mostly from not calling the model. Lookups and table questi
 - Without a model, agentic agents use a rule planner (library search, links in the question, arithmetic). Connected tools (REST, MCP, SQL) are only called by a model. The tool loop has been tested against a scripted vLLM-compatible server, not yet a live Qwen3 on a GPU.
 - The offline extractive writer is faithful but terse. Fluent drafting needs a configured model, which is then held to the same verification.
 - Licences of any model you configure must be checked before shipping (see `models.licence_register`).
+
+## Roadmap
+
+The plan from the November 2026 review is in [docs/roadmap.md](docs/roadmap.md). In short:
+1. **Done (v0.2.0):** security and data-integrity release.
+2. **Next:** measured numbers on real 12 GB and 16 GB GPUs.
+3. **Then:** a sovereign pilot kit (single sign-on, Hindi OCR, offline install, external security test).
+4. **Launch:** a public Trust benchmark against other open-source assistants.
+
+## Contributing
+
+Contributions are welcome:
+- **Code:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Bugs and ideas:** open an [issue](https://github.com/physicsisawesome7/smriti/issues/new/choose).
+- **Security problems:** report them privately as described in [SECURITY.md](SECURITY.md).
+
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md). For help, see [SUPPORT.md](SUPPORT.md).
+
+## Contact
+
+<a href="https://safearly.com"><img src="docs/assets/mark.svg" alt="" width="18"></a> Smriti is built by **[Safearly](https://safearly.com)**, the makers of [Saaf](https://github.com/physicsisawesome7/Saaf).
+
+- 🌐 Website: [safearly.com](https://safearly.com)
+- 💼 LinkedIn: [Safearly](https://www.linkedin.com/company/safeary.ai/)
+- ✉️ Email: [lalit@safearly.com](mailto:lalit@safearly.com) (pilots, deployments, partnerships)
+
+## Licence
+
+[Apache-2.0](LICENSE). If you use Smriti in research, please cite it ([CITATION.cff](CITATION.cff)).

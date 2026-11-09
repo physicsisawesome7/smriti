@@ -1,0 +1,27 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '
+            $0 ~ "^## " v "([^0-9.]|$)" {on=1; next}
+            on && /^## / {exit}
+            on {print}
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || echo "See CHANGELOG.md." > notes.md
+          printf '\n---\nDocker: `docker pull ghcr.io/%s/smriti:%s` · Docs: https://safearly.com/docs/quickstart\n' "${GITHUB_REPOSITORY_OWNER}" "$v" >> notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          name: Smriti ${{ github.ref_name }}

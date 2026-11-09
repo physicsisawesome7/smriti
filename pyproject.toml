@@ -9,7 +9,19 @@ description = "Smriti by Safearly: self-hostable, permission-aware institutional
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
-authors = [{ name = "Safearly" }]
+authors = [{ name = "Safearly", email = "lalit@safearly.com" }]
+keywords = ["rag", "institutional-memory", "access-control", "citations", "ai-agents", "on-premise", "llm", "india"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Information Technology",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Text Processing :: Indexing",
+]
 dependencies = [
   # Saaf (India-first PII masking) from its public repo until it is on PyPI
   "saaf @ git+https://github.com/physicsisawesome7/Saaf@838039ca836af71a780aadaa49a70d4171095bb6#subdirectory=packages/saaf-core",
@@ -27,6 +39,14 @@ dependencies = [
   "openpyxl>=3.1",
   "cryptography>=42",  # connector credentials at rest
 ]
+
+[project.urls]
+Homepage = "https://safearly.com"
+Documentation = "https://safearly.com/docs/quickstart"
+Repository = "https://github.com/physicsisawesome7/smriti"
+Issues = "https://github.com/physicsisawesome7/smriti/issues"
+Changelog = "https://github.com/physicsisawesome7/smriti/blob/main/CHANGELOG.md"
+LinkedIn = "https://www.linkedin.com/company/safeary.ai/"
 
 [project.optional-dependencies]
 tables = ["duckdb>=1.0"]

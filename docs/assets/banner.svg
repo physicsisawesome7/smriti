@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Smriti: private AI agents and workflows that cite their sources">
+  <title>Smriti: private AI agents and workflows that cite their sources</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F5F3FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#g)"/>
+  <g transform="translate(96 96)">
+    <rect x="27" y="14" width="58" height="32" rx="16" fill="#6D28D9"/>
+    <rect x="15" y="54" width="58" height="32" rx="16" fill="#0A0A0A"/>
+    <text x="108" y="64" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="48" font-weight="700" letter-spacing="-1.5" fill="#0A0A0A">smriti</text>
+    <text x="112" y="88" font-family="ui-monospace, Consolas, monospace" font-size="15" letter-spacing="1" fill="#52525B">by safearly</text>
+  </g>
+  <text x="96" y="300" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="58" font-weight="700" letter-spacing="-2" fill="#0A0A0A">Private AI agents and workflows</text>
+  <text x="96" y="372" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="58" font-weight="700" letter-spacing="-2" fill="#6D28D9">that cite their sources.</text>
+  <text x="96" y="440" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="25" fill="#3F3F46">Open-source institutional memory on your own hardware. Every sentence checked,</text>
+  <text x="96" y="474" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="25" fill="#3F3F46">every answer as the person asking, any date in force.</text>
+  <g font-family="ui-monospace, Consolas, monospace" font-size="17" fill="#6D28D9">
+    <rect x="96" y="522" width="218" height="40" rx="20" fill="#EDE9FE"/><text x="122" y="548">VERIFIED CITATIONS</text>
+    <rect x="330" y="522" width="226" height="40" rx="20" fill="#EDE9FE"/><text x="356" y="548">PERMISSION-AWARE</text>
+    <rect x="572" y="522" width="206" height="40" rx="20" fill="#EDE9FE"/><text x="598" y="548">"AS OF" ANSWERS</text>
+    <rect x="794" y="522" width="246" height="40" rx="20" fill="#EDE9FE"/><text x="820" y="548">ONE SMALL GPU OR NONE</text>
+  </g>
+  <text x="1184" y="604" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="16" fill="#71717A">github.com/physicsisawesome7/smriti · safearly.com · Apache-2.0</text>
+</svg>

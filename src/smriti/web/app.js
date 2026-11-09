@@ -70,9 +70,11 @@ async function loadMe() {
 
 const VIEWS = { ask: viewAsk, agents: viewAgents, library: viewLibrary, ingest: viewIngest, watch: viewWatch, skills: viewSkills, memory: viewMemory, govern: viewGovern };
 function go(view) {
+  if (!VIEWS[view]) view = "ask";
   stopPolling();
   S.view = view;
   store("smriti.view", view);
+  if (location.hash.slice(1) !== view) history.replaceState(null, "", `${location.pathname}${location.search}#${view}`);
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   $("#view").innerHTML = `<div class="muted"><span class="spin"></span> Loading…</div>`;
   VIEWS[view]().catch((e) => ($("#view").innerHTML = `<div class="empty">${esc(e.message)}</div>`));
@@ -625,5 +627,10 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#draw
 (async () => {
   S.user = store("smriti.user");
   try { await loadMe(); } catch (_) { S.user = null; await loadMe(); }
-  go(store("smriti.view") || "ask");
+  // deep links: /#agents opens a view; /?q=...#ask asks a question on load
+  const fromHash = location.hash.slice(1).split("?")[0];
+  go(VIEWS[fromHash] ? fromHash : store("smriti.view") || "ask");
+  const q = new URLSearchParams(location.search).get("q");
+  if (q && S.view === "ask") setTimeout(() => { const box = $("#q"); if (box) { box.value = q; doAsk(); } }, 0);
 })();
+window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (VIEWS[v] && v !== S.view) go(v); });

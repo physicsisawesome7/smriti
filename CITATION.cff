@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use Smriti in research or a report, please cite it as below."
+title: "Smriti: permission-aware institutional memory with verified citations"
+type: software
+authors:
+  - given-names: Lalit
+    family-names: Shukla
+    affiliation: Safearly
+    email: lalit@safearly.com
+  - name: Safearly
+    website: "https://safearly.com"
+repository-code: "https://github.com/physicsisawesome7/smriti"
+url: "https://safearly.com"
+license: Apache-2.0
+version: 0.2.0
+date-released: "2026-11-04"
+keywords:
+  - retrieval-augmented generation
+  - institutional memory
+  - access control
+  - citation verification
+  - AI agents
+  - on-premise
+  - India

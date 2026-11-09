@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in Smriti does not work as documented.
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Security problems go to [SECURITY.md](https://github.com/physicsisawesome7/smriti/security/policy), not here.**
+        Never paste real personal data or official documents; use synthetic examples.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Install with `./install.sh --profile cpu`
+        2. Sign in as asha and ask "..."
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `smriti --version`, or the commit.
+      placeholder: smriti 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Docker (install.sh / install.ps1)
+        - pip / source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Profile, GPU and OS
+      placeholder: gpu-12gb, RTX 3060, Ubuntu 24.04
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Answers and citations
+        - Access control
+        - Ingestion and connectors
+        - Agents, tools and workflows
+        - Widget and chat apps
+        - Models and GPU
+        - Install and deployment
+        - Web app
+        - Docs
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or trace
+      description: "`docker compose logs smriti-api`, or the trace id shown under the answer."
+      render: text

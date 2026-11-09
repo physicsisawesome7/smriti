@@ -64,9 +64,11 @@ curl http://127.0.0.1:8000/api/agents/tender-desk/chat \
 
 ```python
 from openai import OpenAI
+
 client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="sk-smriti-...")
-r = client.chat.completions.create(model="agent/tender-desk",
-    messages=[{"role": "user", "content": "What is the LD ceiling under clause 46.1?"}])
+r = client.chat.completions.create(
+    model="agent/tender-desk", messages=[{"role": "user", "content": "What is the LD ceiling under clause 46.1?"}]
+)
 ```
 
 `"stream": true` on `/api/agents/{id}/chat` returns server-sent events: `start`, `step`, `token`, `approval`, `final`. A run that needs approval stops with an `approval` event. Resume it with `POST /api/runs/{run_id}/approve?approve=true` (or `false`) as the same person.

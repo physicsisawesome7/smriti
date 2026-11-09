@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560" role="img" aria-label="Smriti architecture: sources flow through ingestion into the store; questions flow through the permission-aware answer pipeline to the interfaces; models and the audit log sit alongside">
+  <title>Smriti architecture</title>
+  <style>
+    .card { fill: #FFFFFF; stroke: #E4E4E7; stroke-width: 1.5; }
+    .hot { fill: #F5F3FF; stroke: #6D28D9; stroke-width: 1.5; }
+    .h { font: 700 17px Inter, 'Segoe UI', system-ui, sans-serif; fill: #0A0A0A; }
+    .t { font: 14px Inter, 'Segoe UI', system-ui, sans-serif; fill: #3F3F46; }
+    .m { font: 12px ui-monospace, Consolas, monospace; fill: #6D28D9; letter-spacing: .06em; }
+    .arrow { stroke: #6D28D9; stroke-width: 2; fill: none; marker-end: url(#a); }
+    .thin { stroke: #A1A1AA; stroke-width: 1.5; fill: none; stroke-dasharray: 5 5; marker-end: url(#b); }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#6D28D9"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#A1A1AA"/></marker>
+  </defs>
+  <rect width="1200" height="560" rx="20" fill="#FAFAFA"/>
+
+  <!-- sources -->
+  <rect class="card" x="30" y="40" width="210" height="300" rx="16"/>
+  <text class="m" x="50" y="70">SOURCES</text>
+  <text class="t" x="50" y="102">Websites and pages</text>
+  <text class="t" x="50" y="128">Uploads, folders, ZIP</text>
+  <text class="t" x="50" y="154">PDF, Word, Excel, email</text>
+  <text class="t" x="50" y="180">REST / JSON APIs</text>
+  <text class="t" x="50" y="206">SQL databases</text>
+  <text class="t" x="50" y="232">MCP servers</text>
+  <text class="t" x="50" y="258">RSS and sitemaps</text>
+  <text class="t" x="50" y="300">egress guard · sealed</text>
+  <text class="t" x="50" y="320">credentials · schedules</text>
+
+  <!-- ingest -->
+  <rect class="card" x="290" y="40" width="250" height="300" rx="16"/>
+  <text class="m" x="310" y="70">INGEST</text>
+  <text class="h" x="310" y="100">Parse and version</text>
+  <text class="t" x="310" y="126">Clause-aware chunks</text>
+  <text class="t" x="310" y="152">Supersession graph</text>
+  <text class="t" x="310" y="178">PII masked (Saaf)</text>
+  <text class="t" x="310" y="204">Access labels per document</text>
+  <text class="t" x="310" y="230">Embed, then index</text>
+  <text class="t" x="310" y="256">Malware scan, dedupe</text>
+  <text class="t" x="310" y="300">background jobs with</text>
+  <text class="t" x="310" y="320">progress and retry</text>
+
+  <!-- store -->
+  <rect class="card" x="590" y="40" width="200" height="300" rx="16"/>
+  <text class="m" x="610" y="70">STORE</text>
+  <text class="h" x="610" y="100">PostgreSQL</text>
+  <text class="t" x="610" y="124">documents, versions,</text>
+  <text class="t" x="610" y="144">relations, audit</text>
+  <text class="h" x="610" y="184">Qdrant</text>
+  <text class="t" x="610" y="208">dense + sparse,</text>
+  <text class="t" x="610" y="228">access payload filter</text>
+  <text class="h" x="610" y="268">Blob store</text>
+  <text class="t" x="610" y="292">original files,</text>
+  <text class="t" x="610" y="312">immutable</text>
+
+  <!-- answer pipeline -->
+  <rect class="hot" x="840" y="40" width="330" height="300" rx="16"/>
+  <text class="m" x="860" y="70">ANSWER PIPELINE</text>
+  <text class="t" x="860" y="102">1  Input guard, PII masking</text>
+  <text class="t" x="860" y="128">2  Hybrid search inside your access</text>
+  <text class="t" x="860" y="154">3  Second access check on every hit</text>
+  <text class="t" x="860" y="180">4  Version in force on the date asked</text>
+  <text class="t" x="860" y="206">5  Rerank, quote first, then model</text>
+  <text class="t" x="860" y="232">6  Verify every sentence and number</text>
+  <text class="t" x="860" y="258">7  Answer with citations, or abstain</text>
+  <text class="t" x="860" y="300">agents and workflows reuse it:</text>
+  <text class="t" x="860" y="320">tool results are citable passages</text>
+
+  <path class="arrow" d="M240 190 H285"/>
+  <path class="arrow" d="M540 190 H585"/>
+  <path class="arrow" d="M790 190 H835"/>
+
+  <!-- bottom row -->
+  <rect class="card" x="30" y="390" width="510" height="140" rx="16"/>
+  <text class="m" x="50" y="420">MODELS (ANY OPENAI-COMPATIBLE SERVER, OR NONE)</text>
+  <text class="t" x="50" y="452">vLLM profiles for 6, 12, 16 and 24 GB GPUs · Ollama · llama.cpp</text>
+  <text class="t" x="50" y="478">TEI or ONNX encoders on GPU or CPU · extractive answers with no model</text>
+  <text class="t" x="50" y="504">admission control · prefix caching · guarded answer cache</text>
+
+  <rect class="card" x="590" y="390" width="200" height="140" rx="16"/>
+  <text class="m" x="610" y="420">GOVERN</text>
+  <text class="t" x="610" y="452">Hash-chained audit</text>
+  <text class="t" x="610" y="478">Release gates in CI</text>
+  <text class="t" x="610" y="504">Role simulator</text>
+
+  <rect class="card" x="840" y="390" width="330" height="140" rx="16"/>
+  <text class="m" x="860" y="420">INTERFACES</text>
+  <text class="t" x="860" y="452">Web app · agents · workflows</text>
+  <text class="t" x="860" y="478">OpenAI-compatible API · MCP server</text>
+  <text class="t" x="860" y="504">Website widget · Slack · Telegram · Discord</text>
+
+  <path class="thin" d="M1005 340 V385"/>
+  <path class="thin" d="M690 340 V385"/>
+</svg>

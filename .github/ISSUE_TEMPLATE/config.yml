@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/physicsisawesome7/smriti/security/advisories/new
+    about: Report privately. Please do not open a public issue.
+  - name: Documentation
+    url: https://safearly.com/docs/quickstart
+    about: Install, agents, workflows, API and security docs.
+  - name: Pilots, deployments and partnerships
+    url: mailto:lalit@safearly.com
+    about: Write to the Safearly team.
+  - name: Safearly on LinkedIn
+    url: https://www.linkedin.com/company/safeary.ai/
+    about: News and updates.
