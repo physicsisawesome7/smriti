@@ -28,6 +28,7 @@ from . import (
     delete,
     delete_tool,
     get,
+    inventory,
     list_conversations,
     list_for,
     list_keys,
@@ -132,6 +133,8 @@ def mount(
         need(p, "view")
         return {
             "kinds": [{"kind": k, "description": v} for k, v in KINDS.items()],
+            "agent_templates": inventory.templates(),
+            "categories": inventory.CATEGORIES,
             "workflow": {
                 "nodes": [{"type": k, "label": v} for k, v in wf.NODE_TYPES.items()],
                 "templates": wf.TEMPLATES,

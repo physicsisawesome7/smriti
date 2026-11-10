@@ -352,6 +352,10 @@ def apply_env_overrides(tenant: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Skills that ship with Smriti: builtin/skills (see its README)
+BUILTIN_ROOT = Path(__file__).parent / "builtin"
+
+
 def load_pack(tenant_dir: Path) -> TenantPack:
     tenant_dir = Path(tenant_dir).resolve()
     if not (tenant_dir / "tenant.yaml").exists():
@@ -368,6 +372,15 @@ def load_pack(tenant_dir: Path) -> TenantPack:
     workflows: dict[str, Any] = {}
     evals: dict[str, Any] = {"golden": [], "redteam": []}
     sources: dict[str, dict[str, Any]] = {}
+
+    # Built-in skills come first, so a pack can replace one by reusing its name.
+    for root in (BUILTIN_ROOT, *roots):
+        sk_dir = root / "skills"
+        if sk_dir.is_dir():
+            for d in sorted(p for p in sk_dir.iterdir() if (p / "SKILL.md").exists()):
+                meta, body = _front_matter((d / "SKILL.md").read_text(encoding="utf-8"))
+                name = meta.get("name", d.name)
+                skills[name] = Skill(name=name, description=meta.get("description", ""), path=d, meta=meta, body=body)
 
     for root in roots:
         if (root / "tenant.yaml").exists():
@@ -397,12 +410,6 @@ def load_pack(tenant_dir: Path) -> TenantPack:
             ef = root / "evals" / f"{name}.yaml"
             if ef.exists():
                 evals[name] = [*evals[name], *(_yaml(ef).get("cases", []))]
-        sk_dir = root / "skills"
-        if sk_dir.is_dir():
-            for d in sorted(p for p in sk_dir.iterdir() if (p / "SKILL.md").exists()):
-                meta, body = _front_matter((d / "SKILL.md").read_text(encoding="utf-8"))
-                name = meta.get("name", d.name)
-                skills[name] = Skill(name=name, description=meta.get("description", ""), path=d, meta=meta, body=body)
 
     merged_tenant = apply_env_overrides(merged_tenant)
     try:

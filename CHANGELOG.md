@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Built-in skills for every tenant:**
+  - `pii-scan` counts personal data by category and flags public documents or unmasked categories. It never shows values.
+  - `compare-documents` gives a paragraph redline between two documents.
+  - `deadline-tracker` lists dates and "within N days" obligations, with due dates and a CSV.
+  - `rti-reply` drafts an RTI Act reply with the section 7(1) deadline, flags possible section 8(1) exemptions, and never quotes a passage flagged for injection.
+  - `citation-check` verifies pasted text sentence by sentence.
+  - A pack overrides a built-in skill by reusing its name.
+- **Agent inventory:** 17 templates in six purpose groups, served by the API (`agent_templates`). The web app's hard-coded list is gone.
+- **Air-gapped install:** `deploy/offline/make-bundle.sh` and `install-offline.sh` package images, the model cache, the source and settings with checksums, and start Smriti with no network.
+- **docs/offline-stack.md:** library choices per pipeline stage for a zero-internet install (adopt, trial, assess or avoid, with licences).
+
 ## 0.2.0: safe and measured (Gate 0, security and data integrity)
 
 This release fixes the bugs from the 3 November 2026 audit (`docs/roadmap.md`, section 3.6) and the Gate 0 security items (section 7.1). Every fix has a regression test in `tests/test_audit_fixes.py`.

@@ -69,6 +69,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1   # Windows (Docker Desktop
 
 This runs vLLM (Qwen3 AWQ), TEI encoders, PostgreSQL, Qdrant, the API, a crawler worker and an isolated code sandbox. Open <http://127.0.0.1:8000>. See [deploy/README.md](deploy/README.md) for profiles, VRAM budgets, tuning and troubleshooting.
 
+**Air-gapped site:** build a bundle online with `deploy/offline/make-bundle.sh`, carry it over and run `./install-offline.sh`; nothing contacts the internet. The library choices behind it are in [docs/offline-stack.md](docs/offline-stack.md).
+
 **Without Docker** (development, or no GPU), with Python 3.11+:
 
 ```bash

@@ -6,30 +6,8 @@ const AG = { tab: "agents", cat: null, editing: null, chat: null, conv: null, co
 const KIND_IC = { classic: "◎", agentic: "⚙", research: "☰", workflow: "⑂" };
 const KIND_LABEL = { classic: "Classic", agentic: "Agentic", research: "Research", workflow: "Workflow" };
 
-const TEMPLATES = [
-  {
-    name: "Tender desk", kind: "classic", description: "Clause-exact answers from the GCC, correction slips and tender notices.",
-    instructions: "Answer for engineers preparing or vetting works tenders. Always give the clause number and say when a correction slip changed it.",
-    sources: { mode: "selected", doc_types: ["gcc", "correction-slip", "nit", "powers-of-acceptance"], connectors: [], doc_ids: [] },
-    tools: ["search"], starters: ["What is the period for submitting the performance guarantee under clause 16.1?", "What is the maximum liquidated damages under clause 46.1?"],
-  },
-  {
-    name: "Contract analyst", kind: "agentic", description: "Looks things up, does the arithmetic and runs tender checks.",
-    instructions: "Work out amounts exactly with the calculator and cite the clause each figure comes from. Use the tender-validation skill when asked to check a tender.",
-    tools: ["search", "calculator", "skills", "artifact"],
-    starters: ["What is the maximum liquidated damages under clause 46.1? What is 5% of 4,80,00,000?", "Validate tender NR-DLI-ENG-2025-14"],
-  },
-  {
-    name: "Research brief", kind: "research", description: "Splits a broad question into parts and writes a cited brief.",
-    instructions: "Write for a Chief Engineer: short, factual, with clause references.",
-    tools: ["search"], starters: ["What changed in the performance guarantee rules, and what are the current powers of acceptance for works tenders?"],
-  },
-  {
-    name: "Data analyst", kind: "agentic", description: "Writes and runs Python in the sandbox to analyse tables and make files.",
-    instructions: "When numbers need analysis, write a short Python script, run it, and save results as CSV.",
-    tools: ["search", "calculator", "code", "artifact"], starters: ["Make a CSV of the land plots in village Rampur with their areas"],
-  },
-];
+/* The agent inventory comes from the server (smriti/agents/inventory.py), grouped by purpose. */
+const agentTemplates = () => AG.cat?.agent_templates || [];
 
 /* ------------------------------------------------------------ helpers */
 
@@ -104,13 +82,17 @@ async function tabAgentList(box) {
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px"><h2 style="margin:0">Your agents</h2><span class="spacer"></span><button class="btn accent" id="newAgent">+ New agent</button></div>
     ${list.length ? `<div class="conns">${list.map(card).join("")}</div>` : `<div class="empty">No agents yet. Start from a template below or build one from scratch.</div>`}
-    <h2 style="margin-top:26px">Start from a template</h2>
-    <div class="kinds">${TEMPLATES.map((t, i) => `<button class="kind" data-tpl="${i}"><div class="ki">${KIND_IC[t.kind]}</div><div class="kl">${esc(t.name)}</div><div class="kd">${esc(t.description)}</div><div class="kd mono" style="margin-top:6px">${esc(KIND_LABEL[t.kind])} · ${t.tools.map((r) => toolInfo(r).label).join(", ")}</div></button>`).join("")}</div>
+    <h2 style="margin-top:26px">Start from the inventory</h2>
+    <p class="muted" style="margin-top:-4px">Ready-made agents for common desks. Each opens in the builder as your own draft; every one runs offline with built-in tools.</p>
+    ${Object.entries(AG.cat?.categories || {}).map(([cat, label]) => {
+      const items = agentTemplates().map((t, i) => [t, i]).filter(([t]) => t.category === cat);
+      return items.length ? `<h3 class="invcat">${esc(label)}</h3><div class="kinds">${items.map(([t, i]) => `<button class="kind" data-tpl="${i}"><div class="ki">${KIND_IC[t.kind]}</div><div class="kl">${esc(t.name)}</div><div class="kd">${esc(t.description)}</div><div class="kd mono" style="margin-top:6px">${esc(KIND_LABEL[t.kind])} · ${t.tools.map((r) => toolInfo(r).label).join(", ")}</div></button>`).join("")}</div>` : "";
+    }).join("")}
     <h2 style="margin-top:26px">Start from a workflow</h2>
     <p class="muted" style="margin-top:-4px">Chain agents, conditions, code and human sign-off into one run. Every step still cites its sources and acts as the person asking.</p>
     <div class="kinds">${(AG.cat.workflow?.templates || []).map((t, i) => `<button class="kind" data-wtpl="${i}"><div class="ki">${KIND_IC.workflow}</div><div class="kl">${esc(t.name)}</div><div class="kd">${esc(t.description)}</div><div class="kd mono" style="margin-top:6px">${t.graph.nodes.filter((n) => n.type !== "note").map((n) => WF_IC[n.type]).join(" → ")}</div></button>`).join("")}</div>`;
   $("#newAgent").onclick = () => openBuilder({ name: "", kind: "classic", tools: ["search"] });
-  $$("[data-tpl]", box).forEach((b) => (b.onclick = () => openBuilder(JSON.parse(JSON.stringify(TEMPLATES[+b.dataset.tpl])))));
+  $$("[data-tpl]", box).forEach((b) => (b.onclick = () => openBuilder((({ id, category, category_label, ...t }) => t)(JSON.parse(JSON.stringify(agentTemplates()[+b.dataset.tpl]))))));
   $$("[data-wtpl]", box).forEach((b) => (b.onclick = () => {
     const t = AG.cat.workflow.templates[+b.dataset.wtpl];
     openBuilder({ name: t.name, description: t.description, kind: "workflow", graph: JSON.parse(JSON.stringify(t.graph)), tools: [] });

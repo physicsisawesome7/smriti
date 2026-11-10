@@ -103,4 +103,4 @@ Packs are mounted read-only from `./packs`. After editing them, run `docker comp
 | vLLM out of memory under load | lower `LLM_MAX_NUM_SEQS` or `LLM_MAX_MODEL_LEN`, or set `LLM_ENFORCE_EAGER=1` |
 | TEI fails on your GPU | set `TEI_IMAGE` to the tag for your architecture (see the TEI README), or move encoders to CPU: `COMPOSE_PROFILES=llm,cpu-encoders,cpu-rerank` |
 | Containers can't see the GPU | Linux: install the NVIDIA Container Toolkit. Windows: update the NVIDIA driver and Docker Desktop (WSL2 backend) |
-| Air-gapped site | run once online so the `hf-cache` volume fills, then set `HF_HUB_OFFLINE=1` in `.env`. Move images with `docker save` and `docker load` |
+| Air-gapped site | run `./install.sh` once online with the site's profile, then `deploy/offline/make-bundle.sh`; on the site run `./install-offline.sh` from the bundle (checksums, `docker load`, model cache restore, `compose up --pull never`). See [docs/offline-stack.md](../docs/offline-stack.md) |

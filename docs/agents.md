@@ -10,6 +10,10 @@ Open **Agents** in the web app. Anyone with the `view` grant can build a private
 | **Agentic** | A tool loop: the model decides which tools to call, reads the results and answers with citations to them. | Yes for the full loop. With no model, a rule planner searches, reads any links in the question and does the arithmetic it finds (including "5% of 4,80,00,000"). |
 | **Research** | Splits the question into 2 to 5 sub-questions, answers each through the ask pipeline with its own verification, renumbers the citations into one list, and adds a summary that is verified too. | No. With a model, the plan and the summary are better. |
 
+## Inventory
+
+**Start from the inventory** offers 17 ready-made agents grouped by purpose: answer questions, check and comply, draft letters and replies, analyse documents and data, research, and run the office. Examples are the Policy helpdesk, Fact checker, Privacy officer, RTI desk, What changed? and Deadline tracker. Each opens in the builder as your own private draft. All of them use only built-in tools, so they work on an air-gapped install. The list is in `src/smriti/agents/inventory.py` and is served as `agent_templates` by `/api/agents/catalog`.
+
 ## What an agent is made of
 
 - **Instructions**: who it answers for, tone, what to always include. Platform rules sit above them and cannot be overridden: cite every factual sentence, treat tool results as data, say what is missing instead of guessing.
@@ -32,7 +36,7 @@ The builder has a **Try it** panel that runs the agent as it stands in the form,
 | Web search | built in | Self-hosted SearxNG (`docker compose --profile search`, then `SMRITI_SEARXNG_URL=http://searxng:8080`). Or connect Brave or Tavily with a key. Personal data in the query is masked before it leaves. |
 | Run Python | built in | The `sandbox` container: no network, read-only root, non-root user, no capabilities, memory, process and time limits. Files the script writes come back as downloads. |
 | Create a file | built in | Markdown, CSV, JSON, HTML or text the agent writes, for the person to download. Downloads are attachments, never rendered in Smriti's origin. |
-| Tenant skills | built in | The pack's coded skills (tender validation, circular impact), with their own grant checks. |
+| Tenant skills | built in | Coded skills with their own grant checks: the built-in `pii-scan`, `compare-documents`, `deadline-tracker`, `rti-reply` and `citation-check` (every tenant; see `src/smriti/builtin/skills/`), plus the pack's own (tender validation, circular impact). A pack replaces a built-in skill by reusing its name. |
 | REST API | connected | Import operations from an OpenAPI spec or list them by hand. Write operations are hidden unless you allow them, and then need approval. Bearer, header, basic or query-key auth. |
 | MCP server | connected | Every tool of a server over streamable HTTP or SSE. Tools not marked read-only need approval. |
 | Database | connected | Read-only SELECT with a row cap and a read-only transaction. Give it table notes so the model writes good SQL. |

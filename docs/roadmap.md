@@ -367,6 +367,8 @@ Model licence notes:
 
 ## 7. Phased plan
 
+The library choices for a zero-internet install, the air-gap bundle and the shipped skills and agents are in [offline-stack.md](offline-stack.md).
+
 | # | Phase | Weeks | Goal | Must scope | Exit criteria |
 |---|---|---|---|---|---|
 | 0 | **Gate 0: safe and measured** | 1-3 | Close the public repo's known holes. Turn every GPU and quality claim into a measured number. | **Track A** (security and data-integrity release v0.2.0, about 2 engineer-weeks, ships first): G0-1…G0-22 below. **Track D** (bug sweep from the second audit, section 3.6). **Track B** (measurement): inference items 1-6. **Track C** (truth set): free verifier fixes; a messy real corpus of 200-500 docs (scanned, Hindi) with 50 golden questions; eval harness v1; clean-box installs on Windows and Ubuntu; Alembic baseline. | Hotfix tagged with security sign-off and its exit tests; bench table per card and profile; written engine decision; quality-profile go/no-go; real-GPU golden scores; install time measured |

@@ -185,6 +185,7 @@ pre.json { font-family: var(--mono); font-size: 11.5px; background: var(--surfac
 .kind .ki { font-size: 20px; }
 .kind .kl { font-weight: 600; color: var(--ink); margin: 6px 0 4px; }
 .kind .kd { font-size: 12.5px; color: var(--muted); }
+.invcat { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 8px; }
 .conn { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: #fff; display: flex; flex-direction: column; gap: 8px; }
 .conn .ch { display: flex; gap: 10px; align-items: center; }
 .conn .ch .ki { font-size: 20px; }
