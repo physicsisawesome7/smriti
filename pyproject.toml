@@ -57,7 +57,7 @@ mcp = ["mcp>=2.0,<3"]  # MCPServer API (2.x); the MCP connector and `smriti mcp`
 browser = ["playwright>=1.44"]
 mysql = ["pymysql>=1.1"]
 all = ["smriti[tables,qdrant,postgres,s3,mcp,mysql]"]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=9.2.0", "ruff>=0.6"]
 
 [project.scripts]
 smriti = "smriti.cli:main"
