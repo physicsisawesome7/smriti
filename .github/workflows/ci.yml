@@ -51,7 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose config -q
+      # the installer writes .env from the profiles; validate with a real one
+      - run: cat deploy/profiles/_common.env deploy/profiles/gpu-12gb.env > .env && docker compose config -q
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
