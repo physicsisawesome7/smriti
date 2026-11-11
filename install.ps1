@@ -105,6 +105,19 @@ if ((Test-Path .env) -and -not $Reconfigure) {
 }
 
 # ---- start ---------------------------------------------------------------------------
+$envText = Get-Content (Join-Path $PSScriptRoot ".env") -Raw
+if ($envText -match '(?m)^COMPOSE_PROFILES=.*llm-gguf') {
+    # same pinned list as deploy/bench/get-gguf.sh (the single source of truth)
+    $gguf = if ($envText -match '(?m)^GGUF_MODEL=(\S+)') { $Matches[1] } else { "Qwen3-4B-Q4_K_M.gguf" }
+    $spec = Select-String -Path (Join-Path $PSScriptRoot "deploy\bench\get-gguf.sh") -Pattern ('^\s*"\S+\s+(\S+)\s+(\S+)\s+' + [regex]::Escape($gguf) + '\s+(\S+)"') | Select-Object -First 1
+    if (-not $spec) { Die "no pinned download for $gguf; put it in the hf-cache volume under gguf/" }
+    $repo, $rev, $sha = $spec.Matches[0].Groups[1].Value, $spec.Matches[0].Groups[2].Value, $spec.Matches[0].Groups[3].Value
+    Say "downloading LLM weights $gguf (pinned, checksummed)..."
+    docker volume create smriti_hf-cache | Out-Null
+    $sh = "mkdir -p /m/gguf && cd /m/gguf && { [ -s '$gguf' ] || { wget -q -O '$gguf.part' 'https://huggingface.co/$repo/resolve/$rev/$gguf' && mv '$gguf.part' '$gguf'; }; } && echo '$sha  $gguf' | sha256sum -c -"
+    docker run --rm -v smriti_hf-cache:/m alpine:3.20 sh -euc $sh
+    if ($LASTEXITCODE -ne 0) { Die "could not fetch $gguf; on an air-gapped site use deploy\offline\" }
+}
 Say "building and starting (first run downloads images and models: several GB)..."
 docker compose up -d --build
 if ($LASTEXITCODE -ne 0) { Die "docker compose up failed" }

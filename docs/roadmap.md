@@ -120,7 +120,7 @@ All of these were traced through the code but not exploited. They are fixed in t
 |---|---|---|---|
 | H | Agentic answers are not streamed; tool steps use non-streaming calls. | `agents/runtime.py:326,355` | F1 streaming tool loop |
 | H | Admission control is per process and blind to the engine: 8 per worker × 2 workers can hit an engine with 2 slots. | `llm.py:107-118` | F4 shared, slot-aware admission |
-| H | `smriti bench` has no time to first token, prefill and decode rates, or agent scenario. | `bench.py:48-110` | Bench v2 |
+| H | `smriti bench` has no time to first token, prefill and decode rates, or agent scenario. | `bench.py:48-110` | Bench v2 (model servers: `smriti modelbench`, done; agent scenario open) |
 | M | Two full-table relation scans per retrieve; N+1 amendment lookups. | `engine.py:629-630,710-757` | F5/F6 memoise and batch |
 | M | The reranker processes about 25k tokens per query (50 × 2,000 chars) in serial batches, on the GPU shared with the LLM. | `config.py:118`, `index.py:566-573` | F9 token cap (after the as-of second pass) |
 | M | Three TEI encoder containers. | `compose.yaml` | One encoder process (BGE-M3, reranker, NLI) |

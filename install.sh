@@ -101,6 +101,11 @@ else
 fi
 
 # ---- start ---------------------------------------------------------------------------
+if grep -qE '^COMPOSE_PROFILES=.*llm-gguf' .env; then
+  GGUF=$(grep -E '^GGUF_MODEL=' .env | cut -d= -f2); GGUF=${GGUF:-Qwen3-4B-Q4_K_M.gguf}
+  say "downloading LLM weights $GGUF (pinned, checksummed)…"
+  bash deploy/bench/get-gguf.sh "$GGUF" || die "could not fetch $GGUF; on an air-gapped site use deploy/offline/"
+fi
 say "building and starting (first run downloads images and models: several GB)…"
 docker compose up -d --build
 

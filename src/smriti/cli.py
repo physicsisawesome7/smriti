@@ -92,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     bp.add_argument(
         "--no-cache", action="store_true", help="make every question unique so the answer cache cannot help"
     )
+    from .modelbench import add_parser as add_modelbench
+
+    add_modelbench(sub)
     ip = sub.add_parser("ingest")
     ip.add_argument("files", nargs="+")
     ip.add_argument("--as", dest="user", default="km")
@@ -194,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
         from .bench import run_bench
 
         return run_bench(args.url, args.concurrency, args.requests, unique=args.no_cache)
+
+    if args.cmd == "modelbench":
+        return int(args.func(args))
 
     if args.cmd == "mcp":
         from .mcp_server import serve_stdio

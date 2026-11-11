@@ -12,6 +12,7 @@
 #   postgres       documents, versions, audit chain, traces
 #   qdrant         dense + sparse vectors, int8-quantised, payload filters
 #   llm            vLLM, OpenAI-compatible, AWQ weights          (profile: llm)
+#   llm-gguf       llama.cpp, GGUF weights, for 6-8 GB GPUs      (profile: llm-gguf)
 #   embed/rerank   Hugging Face TEI on the GPU                    (profile: gpu-encoders)
 #   embed-cpu/...  TEI on the CPU                                 (profile: cpu-encoders)
 #   sandbox        agents' Python runner: no network, read-only, non-root, capped
@@ -151,6 +152,31 @@ services:
       timeout: 5s
       retries: 80
       start_period: 120s
+    restart: unless-stopped
+
+  # llama.cpp for small GPUs (6-8 GB): 4-bit GGUF weights, 8-bit KV cache, a
+  # ~4 GB image instead of vLLM's ~20 GB. Answers on llm:8000 like vLLM, so use
+  # one or the other. Weights: deploy/bench/get-gguf.sh (into the model cache).
+  llm-gguf:
+    profiles: ["llm-gguf"]
+    image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:17934f68b6efc68671800735f25e209b489f47b610cfbb5c0a5c30965b54023c}
+    command: >-
+      -m /models/gguf/${GGUF_MODEL:-Qwen3-4B-Q4_K_M.gguf} --alias ${LLM_SERVED_NAME:-smriti-chat}
+      --host 0.0.0.0 --port 8000 --jinja --metrics -ngl 99 -fa on
+      -ctk ${GGUF_KV_TYPE:-q8_0} -ctv ${GGUF_KV_TYPE:-q8_0}
+      -np ${LLM_MAX_NUM_SEQS:-4} -c ${GGUF_CTX:-8192} ${GGUF_EXTRA_ARGS:-}
+    volumes: ["hf-cache:/models:ro"]
+    networks: {default: {aliases: [llm]}}
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
     restart: unless-stopped
 
   embed:

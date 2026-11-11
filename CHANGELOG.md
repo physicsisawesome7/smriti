@@ -12,6 +12,10 @@
   - A pack overrides a built-in skill by reusing its name.
 - **Agent inventory:** 17 templates in six purpose groups, served by the API (`agent_templates`). The web app's hard-coded list is gone.
 - **Air-gapped install:** `deploy/offline/make-bundle.sh` and `install-offline.sh` package images, the model cache, the source and settings with checksums, and start Smriti with no network.
+- **`smriti modelbench`:** benchmarks the model servers directly. `chat` sweeps concurrency and reports TTFT, TPOT, inter-token latency, tokens/s and goodput against a latency target, for one or more LLMs. `embed` and `rerank` report throughput by batch and candidate count. `retrieval` re-indexes the pack with every embedder and reranker pair and scores the golden set. Guide: `docs/model-benchmarks.md`.
+- **llama.cpp for 6 GB GPUs:** a new `llm-gguf` service (llama.cpp CUDA, GGUF weights) answers on `llm:8000` like vLLM. The `gpu-6gb` profile now uses it with Qwen3-4B Q4_K_M, an 8-bit KV cache, 1,000 tokens of context and 4 concurrent answers, chosen from measurements on an RTX 4050 6 GB (`docs/model-benchmarks.md`). Both installers download the pinned, checksummed weights into the model cache, so the offline bundle carries them. vLLM stays available on that profile through `COMPOSE_PROFILES=llm,...`.
+- **deploy/bench/:** `get-gguf.sh` (pinned GGUF downloads), `llm-sweep.sh` (one llama.cpp configuration per run) and a README for benchmarking vLLM on 12 GB and larger cards.
+- **`modelbench chat` calibrates prompt size** against the server's own token count (the demo corpus is about 0.43 words per token, not 0.75) and reports the server's error message when a request fails.
 - **docs/offline-stack.md:** library choices per pipeline stage for a zero-internet install (adopt, trial, assess or avoid, with licences).
 
 ## 0.2.0: safe and measured (Gate 0, security and data integrity)

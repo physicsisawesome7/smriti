@@ -23,6 +23,9 @@ data/
 .DS_Store
 Thumbs.db
 
+# benchmark output (smriti modelbench --json)
+bench-results/
+
 # local editor and preview settings
 .claude/
 data-dev/

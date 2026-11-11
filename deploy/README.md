@@ -30,7 +30,7 @@ The installer checks Docker and GPU access inside containers, picks a hardware p
 | Profile | Card | LLM | Encoders | KV cache | In flight |
 |---|---|---|---|---|---|
 | `cpu` | none | none: verified extractive answers | CPU (e5-small, ONNX) | — | — |
-| `gpu-6gb` | RTX 4050/3050 laptop | Qwen3-4B AWQ, eager | CPU (e5-small, ONNX) | fp16, ~10k tok | 4 |
+| `gpu-6gb` | RTX 4050/3050 laptop | Qwen3-4B Q4_K_M on llama.cpp (`llm-gguf`) | CPU (e5-small, ONNX) | q8_0, 12k tok | 4 |
 | `gpu-12gb` | **RTX 3060 12 GB** | Qwen3-4B AWQ | GPU fp16 | fp16, ~22k tok | 16 |
 | `gpu-16gb` | **RTX 5070 Ti 16 GB** | Qwen3-8B AWQ | GPU fp16 | fp8, ~53k tok | 16 |
 | `gpu-24gb` | RTX 3090/4090 | Qwen3-14B AWQ | GPU fp16 | fp8, ~80k tok | 32 |
@@ -79,7 +79,9 @@ The GPU profiles add LLM generation time on top. Measure them on your card with 
 | Different model | `LLM_MODEL=...` (any vLLM-supported AWQ or GPTQ checkpoint), then `docker compose up -d llm` |
 | Longer context | raise `LLM_MAX_MODEL_LEN`, lower `LLM_MAX_NUM_SEQS` to keep the KV budget |
 | LLM on another machine | `SMRITI_CHAT_URL=http://host:8000/v1`, `SMRITI_CHAT_MODEL=...`, and remove `llm` from `COMPOSE_PROFILES` |
-| Ollama or llama.cpp instead of vLLM | point `SMRITI_CHAT_URL` at its OpenAI-compatible endpoint |
+| llama.cpp instead of vLLM | `COMPOSE_PROFILES=llm-gguf,...` (the 6 GB default), weights from `deploy/bench/get-gguf.sh`; tune with `GGUF_MODEL`, `GGUF_KV_TYPE`, `GGUF_CTX`, `LLM_MAX_NUM_SEQS`, `GGUF_EXTRA_ARGS` |
+| Ollama or another server | point `SMRITI_CHAT_URL` at its OpenAI-compatible endpoint |
+| Benchmark the LLM before tuning | [deploy/bench/README.md](bench/README.md) |
 | Ingest a shared drive | put or mount it under `./imports` (or set `SMRITI_IMPORTS_DIR`), then add a *Server folder* source for `/imports/...` |
 | Crawl intranet hosts only | `SMRITI_EGRESS_ALLOW_PRIVATE=1` (default). Add exceptions with `SMRITI_EGRESS_ALLOWLIST=host,10.0.0.0/8` |
 | Your own documents and roles | copy `packs/tenants/railways-demo` to `packs/tenants/<you>`, edit the YAML, set `SMRITI_PACKS=/app/packs/tenants/<you>` |

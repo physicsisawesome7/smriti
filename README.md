@@ -174,7 +174,7 @@ evals/             golden.yaml, redteam.yaml
 
 ## Deploy
 
-`./install.sh` (or `install.ps1`) detects the GPU, writes `.env` from `deploy/profiles/<profile>.env`, starts [compose.yaml](compose.yaml) and waits until the model servers are ready. Everything is configured in `.env`: models, VRAM split, batch sizes, ports, auth and which tenant pack to load. Packs are mounted from `./packs`, so you change documents, roles and sources without rebuilding. `smriti bench` measures latency, throughput and GPU tokens per answer on your hardware. Details: [deploy/README.md](deploy/README.md).
+`./install.sh` (or `install.ps1`) detects the GPU, writes `.env` from `deploy/profiles/<profile>.env`, starts [compose.yaml](compose.yaml) and waits until the model servers are ready. Everything is configured in `.env`: models, VRAM split, batch sizes, ports, auth and which tenant pack to load. Packs are mounted from `./packs`, so you change documents, roles and sources without rebuilding. `smriti bench` measures latency, throughput and GPU tokens per answer on your hardware; `smriti modelbench` compares models and tunes the model servers themselves ([docs/model-benchmarks.md](docs/model-benchmarks.md)). Details: [deploy/README.md](deploy/README.md).
 
 The GPU budget comes mostly from not calling the model. Lookups and table questions are answered by verified quotes or code. A guarded cache reuses answers for identical access profiles. Prompts are capped and open with a static prefix that vLLM caches. Qwen3's reasoning tokens are off. Admission control serves the verified extractive answer instead of queueing when the GPU is saturated.
 
