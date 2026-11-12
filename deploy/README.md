@@ -59,7 +59,7 @@ docker compose exec smriti-api smriti bench --concurrency 8 --requests 200
 docker compose exec smriti-api smriti bench --concurrency 8 --requests 200 --no-cache   # GPU path only
 ```
 
-The bench reports p50/p95/p99 latency, answers per second, the share of answers that needed the LLM, prompt and completion tokens per LLM call, GPU tokens per answer, cache hits and load shedding. Prometheus metrics are at `/api/metrics`, readiness at `/api/health?deep=1`.
+The bench reports p50/p95/p99 latency, answers per second, the share of answers that needed the LLM, prompt and completion tokens per LLM call, GPU tokens per answer, cache hits and load shedding. Prometheus metrics are at `/api/metrics`, readiness at `/api/health?ready=1` (no sign-in; 200 or 503), with per-dependency detail at `/api/health?deep=1` (metrics token).
 
 Measured with the `cpu` profile in Docker Desktop on a 16-core laptop (no LLM, Postgres + Qdrant + TEI e5-small), 120 requests at concurrency 8:
 

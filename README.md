@@ -184,6 +184,7 @@ The GPU budget comes mostly from not calling the model. Lookups and table questi
 - The 12 GB and 16 GB profiles are sized from documented model and KV-cache arithmetic and have not been run on those cards yet; run `smriti bench` after install and adjust `.env`.
 - Keycloak, OpenFGA and Temporal integrations are interfaces with local implementations. The adapters still need to be written against a live deployment.
 - Without a model, agentic agents use a rule planner (library search, links in the question, arithmetic). Connected tools (REST, MCP, SQL) are only called by a model. The tool loop has been tested against a scripted vLLM-compatible server, not yet a live Qwen3 on a GPU.
+- On the hard set (190 questions over 268 synthetic documents, [docs/evaluation.md](docs/evaluation.md)) the 6 GB profile passes 55% with zero leaks. Exact lookups, amendment chains and permissions pass; reworded, cross-language and two-document questions mostly do not yet.
 - The offline extractive writer is faithful but terse. Fluent drafting needs a configured model, which is then held to the same verification.
 - Licences of any model you configure must be checked before shipping (see `models.licence_register`).
 

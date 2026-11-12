@@ -231,14 +231,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health(
         request: Request,
         deep: bool = False,
+        ready: bool = False,
         authorization: str | None = Header(default=None),
         x_smriti_user: str | None = Header(default=None),
     ) -> Any:
-        """Liveness; with ?deep=1 (metrics token, or audit/administer), readiness of every dependency."""
+        """Liveness. ``?ready=1`` also checks every dependency and answers 200 or 503 with no
+        detail, so installers and orchestrators can wait on it without credentials. ``?deep=1``
+        (metrics token, or audit/administer) adds which dependency is down."""
         out: dict[str, Any] = {"ok": True, "version": __version__}
-        if deep:
-            ops_access(request, authorization, x_smriti_user)
-            out["tenants"] = list(plat.tenants)
+        if deep or ready:
+            if deep:
+                ops_access(request, authorization, x_smriti_user)
+                out["tenants"] = list(plat.tenants)
             checks: dict[str, str] = {}
             try:
                 plat.store.count(traces)
@@ -257,7 +261,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         )
                     except httpx.HTTPError as e:
                         checks[f"{t.id}:{task}"] = f"down: {type(e).__name__}"
-            out["checks"] = checks
+            if deep:
+                out["checks"] = checks
             out["ok"] = all(v == "ok" for v in checks.values())
             if not out["ok"]:
                 return JSONResponse(out, status_code=503)

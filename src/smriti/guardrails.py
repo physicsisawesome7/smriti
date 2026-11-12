@@ -77,11 +77,37 @@ NEGATION = re.compile(
     r"\b(?:not|never|none|nor|without|except|cannot|neither|nil|unless)\b|\bno\b(?!\.?\s*\d)|n't\b|नहीं|बिना|मत|(?<![ऀ-ॿ])न(?![ऀ-ॿ])",
     re.I,
 )
+# Bound phrases that contain a negation word but are not negations: "not less than 21 days" and
+# "at least 21 days" say the same thing. They are removed before the negation test and compared
+# as bounds instead.
+LOWER_BOUND = re.compile(
+    r"\b(?:at\s+least|not\s+less\s+than|no\s+less\s+than|no\s+fewer\s+than|not\s+fewer\s+than|minimum|not\s+(?:earlier|sooner)\s+than|"
+    r"or\s+more|and\s+above)\b|कम\s+से\s+कम|न्यूनतम|से\s+कम\s+नहीं",
+    re.I,
+)
+UPPER_BOUND = re.compile(
+    r"\b(?:at\s+most|not\s+more\s+than|no\s+more\s+than|not\s+exceed(?:ing)?|not\s+later\s+than|no\s+later\s+than|maximum|"
+    r"up\s+to|within|or\s+less|and\s+below)\b|अधिक\s+से\s+अधिक|अधिकतम|से\s+अधिक\s+नहीं|के\s+भीतर",
+    re.I,
+)
+# Words that widen a claim to everything, and words that say it holds only for part.
+UNIVERSAL = re.compile(
+    r"\b(?:all|every|each|always|only|solely|exclusively|in\s+all\s+cases)\b|सभी|प्रत्येक|हमेशा|केवल|सिर्फ़?", re.I
+)
+PARTIAL = re.compile(r"\b(?:some|few|certain|sometimes|occasionally|may|in\s+some\s+cases)\b|कुछ|कभी-कभी", re.I)
+
 DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
 
 def negated(text: str) -> bool:
-    return bool(NEGATION.search(text or ""))
+    text = UPPER_BOUND.sub(" ", LOWER_BOUND.sub(" ", text or ""))
+    return bool(NEGATION.search(text))
+
+
+def bound_of(text: str) -> str:
+    """``lower``, ``upper``, ``both`` or ``""`` for the limit a sentence states."""
+    lo, hi = bool(LOWER_BOUND.search(text or "")), bool(UPPER_BOUND.search(text or ""))
+    return "both" if lo and hi else "lower" if lo else "upper" if hi else ""
 
 
 CITE = re.compile(r"\[(\d{1,2})\]")
@@ -217,8 +243,10 @@ class Guardrails:
                     nn = _norm_num(n)
                     if nn and nn not in src_nums:
                         nums_bad.append(n.strip())
-            polarity_ok = _polarity_matches(body, [by_n[c].text for c in cites]) if cites else True
-            ok = bool(cites) and support >= 0.5 and not nums_bad and polarity_ok
+            cited_texts = [by_n[c].text for c in cites]
+            polarity_ok = _polarity_matches(body, cited_texts) if cites else True
+            quantifier_ok = _quantifier_matches(body, cited_texts) if cites else True
+            ok = bool(cites) and support >= 0.5 and not nums_bad and polarity_ok and quantifier_ok
             rows.append(
                 {
                     "sentence": body[:240],
@@ -226,6 +254,7 @@ class Guardrails:
                     "support": round(support, 2),
                     "numbers_not_in_source": nums_bad,
                     "polarity_ok": polarity_ok,
+                    "quantifier_ok": quantifier_ok,
                     "supported": ok,
                 }
             )
@@ -241,21 +270,40 @@ class Guardrails:
         }
 
 
-def _polarity_matches(sentence: str, sources: list[str]) -> bool:
-    """The source sentence closest to ``sentence`` must agree with it on negation."""
+def _closest_source(sentence: str, sources: list[str]) -> tuple[str | None, float]:
     words = set(tokenize(sentence))
-    if not words:
-        return True
     best, best_overlap = None, 0.0
     for src in sources:
         for s in split_sentences(src or ""):
-            ov = len(words & set(tokenize(s))) / len(words)
+            ov = len(words & set(tokenize(s))) / len(words) if words else 0.0
             if ov > best_overlap:
                 best, best_overlap = s, ov
+    return best, best_overlap
+
+
+def _polarity_matches(sentence: str, sources: list[str]) -> bool:
+    """The source sentence closest to ``sentence`` must agree with it on negation."""
+    if not set(tokenize(sentence)):
+        return True
+    best, best_overlap = _closest_source(sentence, sources)
     if best is None or best_overlap < 0.6:
         # no clearly matching source sentence: a negative claim still needs a negative source
         return not negated(sentence) or any(negated(src or "") for src in sources)
     return negated(best) == negated(sentence)
+
+
+def _quantifier_matches(sentence: str, sources: list[str]) -> bool:
+    """Limits and scope must not be flipped or widened against the closest source sentence:
+    "at least 21 days" is not supported by "within 21 days", and "all contractors" is not
+    supported by "some contractors". Only clear contradictions fail; a sentence that adds
+    no limit or scope word always passes."""
+    best, best_overlap = _closest_source(sentence, sources)
+    if best is None or best_overlap < 0.6:
+        return True
+    mine, theirs = bound_of(sentence), bound_of(best)
+    if mine in ("lower", "upper") and theirs in ("lower", "upper") and mine != theirs:
+        return False
+    return not (UNIVERSAL.search(sentence) and PARTIAL.search(best) and not UNIVERSAL.search(best))
 
 
 def _norm_num(s: str) -> str:

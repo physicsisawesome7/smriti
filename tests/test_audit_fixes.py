@@ -196,6 +196,10 @@ def test_requests_without_a_user_are_refused(fresh_app):  # type: ignore[no-unty
     assert c.get("/api/metrics", headers={"X-Smriti-User": "asha"}).status_code == 403
     assert c.get("/api/metrics", headers={"X-Smriti-User": "nadia"}).status_code == 200
     assert "tenants" not in c.get("/api/health").json()
+    # readiness needs no sign-in (the installer waits on it) and gives no detail away
+    ready = c.get("/api/health?ready=1")
+    assert ready.status_code == 200 and set(ready.json()) == {"ok", "version"}
+    assert c.get("/api/health?deep=1").status_code == 401
 
 
 def test_tokens_can_be_bound_to_a_tenant(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
@@ -328,6 +332,42 @@ def test_verifier_catches_negation_and_devanagari_digits(tenant):  # type: ignor
     assert same["sentences"][0]["supported"]
     hi = Passage(**{**p.__dict__, "text": "अनुबंध मूल्य का 5% जमा करना होगा।"})
     assert not tenant.guard.verify("अनुबंध मूल्य का ५% जमा करना होगा [1]।", [hi])["sentences"][0]["numbers_not_in_source"]
+
+
+def _passage(text: str):  # type: ignore[no-untyped-def]
+    from smriti.models import Passage
+
+    return Passage(
+        n=1, chunk_id="c", doc_id="d", version=1, title="GCC", ref_no=None, doc_date=None, doc_type="gcc",
+        clause_id=None, section="", page=1, text=text, score=1.0, status="current", doc_class="public",
+    )  # fmt: skip
+
+
+def test_verifier_checks_limits_and_scope(tenant):  # type: ignore[no-untyped-def]
+    def ok(answer: str, source: str) -> bool:
+        return tenant.guard.verify(answer, [_passage(source)])["sentences"][0]["supported"]
+
+    within = "The contractor shall submit the performance guarantee within 21 days of the letter of acceptance."
+    # a flipped limit is not supported
+    assert not ok(
+        "The contractor shall submit the performance guarantee at least 21 days after the letter of acceptance [1].",
+        within,
+    )
+    assert ok(
+        "The contractor shall submit the performance guarantee within 21 days of the letter of acceptance [1].", within
+    )
+    # the same limit in other words is supported, and "not less than" is not read as a negation
+    floor = "The retention period for tender records shall be not less than 5 years from the contract date."
+    assert ok("The retention period for tender records shall be at least 5 years from the contract date [1].", floor)
+    assert not ok("The retention period for tender records shall be at most 5 years from the contract date [1].", floor)
+    # scope cannot be widened from some to all
+    some = "Some contractors may be exempted from the earnest money deposit by the tender committee."
+    assert not ok("All contractors are exempted from the earnest money deposit by the tender committee [1].", some)
+    assert ok("Some contractors may be exempted from the earnest money deposit by the tender committee [1].", some)
+    # Hindi limits
+    hi = "ठेकेदार को स्वीकृति पत्र के 21 दिन के भीतर निष्पादन गारंटी जमा करनी होगी।"
+    assert not ok("ठेकेदार को स्वीकृति पत्र के कम से कम 21 दिन बाद निष्पादन गारंटी जमा करनी होगी [1]।", hi)
+    assert ok("ठेकेदार को स्वीकृति पत्र के 21 दिन के भीतर निष्पादन गारंटी जमा करनी होगी [1]।", hi)
 
 
 def test_answer_cache_never_reuses_across_negation():  # type: ignore[no-untyped-def]
@@ -672,3 +712,64 @@ def test_approval_runs_once_and_never_over_an_api_key(fresh_app, monkeypatch):  
         x.join()
     assert [m for m, _, _ in log] == ["POST"]  # exactly one execution
     assert sum(1 for x in results if (isinstance(x, str) and "already" in x) or "not waiting" in str(x)) == 2
+
+
+def test_worker_heartbeat_and_healthcheck(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    import threading
+    import time
+
+    from smriti import cli
+
+    monkeypatch.setenv("SMRITI_HEARTBEAT_FILE", str(tmp_path / "hb"))
+    monkeypatch.setattr(cli, "HEARTBEAT_EVERY_S", 0.05)
+    assert not cli.worker_healthy()  # no worker has run
+    stop = threading.Event()
+    job = threading.Thread(target=stop.wait, daemon=True)
+    job.start()
+    beat = cli._worker_heartbeat([job])
+    time.sleep(0.2)
+    assert cli.worker_healthy(max_age_s=1)
+    assert cli.main(["worker", "--healthcheck"]) == 0
+    stop.set()  # a dead worker thread stops the heartbeat
+    job.join()
+    beat.join(timeout=2)
+    time.sleep(0.3)
+    assert not cli.worker_healthy(max_age_s=0.2)
+    assert cli.main(["worker", "--healthcheck"]) == 1
+
+
+def test_bench_runs_with_and_without_access_to_the_meters(fresh_app, tmp_path, capsys):  # type: ignore[no-untyped-def]
+    import json
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from smriti.bench import run_bench
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    server = uvicorn.Server(uvicorn.Config(fresh_app, host="127.0.0.1", port=port, log_level="warning"))
+    th = threading.Thread(target=server.run, daemon=True)
+    th.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    url = f"http://127.0.0.1:{port}"
+    try:
+        # the meters need sign-in since 0.2.0: without it the bench still reports latency
+        assert run_bench(url, 2, 4) == 0
+        out = capsys.readouterr().out
+        assert "no access to /api/metrics.json" in out and "llm_calls" not in out
+        # with someone who may read them, token counts are included and the report is saved
+        path = tmp_path / "bench.json"
+        assert run_bench(url, 2, 4, metrics_user="nadia", json_path=str(path)) == 0
+        report = json.loads(path.read_text(encoding="utf-8"))
+        assert report["ok"] == 4 and report["errors"] == 0 and "llm_calls" in report and "load_shed" in report
+    finally:
+        server.should_exit = True
+        th.join(5)

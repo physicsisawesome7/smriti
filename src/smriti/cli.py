@@ -14,9 +14,13 @@ smriti mcp --as USER         MCP server on stdio
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +70,38 @@ def seed(plat: Any, tenant_id: str | None = None) -> list[dict[str, Any]]:
     return out
 
 
+HEARTBEAT_EVERY_S = 15
+
+
+def heartbeat_path() -> Path:
+    return Path(os.environ.get("SMRITI_HEARTBEAT_FILE") or Path(tempfile.gettempdir()) / "smriti-worker.heartbeat")
+
+
+def _worker_heartbeat(threads: list[threading.Thread]) -> threading.Thread:
+    """Touch the heartbeat file while every worker thread is alive. The
+    container health check (``smriti worker --healthcheck``) reads its age, so
+    a worker whose job runner died stops looking healthy."""
+    path = heartbeat_path()
+
+    def beat() -> None:
+        while all(th.is_alive() for th in threads):
+            with contextlib.suppress(OSError):
+                path.write_text(str(int(time.time())), encoding="utf-8")
+            time.sleep(HEARTBEAT_EVERY_S)
+
+    th = threading.Thread(target=beat, daemon=True, name="smriti-heartbeat")
+    th.start()
+    return th
+
+
+def worker_healthy(max_age_s: float | None = None) -> bool:
+    limit = 4 * HEARTBEAT_EVERY_S if max_age_s is None else max_age_s
+    try:
+        return time.time() - heartbeat_path().stat().st_mtime <= limit
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="smriti", description="Smriti by Safearly: institutional memory")
     from . import __version__
@@ -84,11 +120,17 @@ def main(argv: list[str] | None = None) -> int:
         help="API processes (needs the qdrant backend when >1)",
     )
     sub.add_parser("seed")
-    sub.add_parser("worker", help="run source schedules and background jobs (one per deployment)")
+    wp = sub.add_parser("worker", help="run source schedules and background jobs (one per deployment)")
+    wp.add_argument(
+        "--healthcheck", action="store_true", help="exit 0 if a running worker wrote its heartbeat recently"
+    )
     bp = sub.add_parser("bench", help="load-test a running server and report latency, throughput and GPU tokens")
     bp.add_argument("--url", default="http://127.0.0.1:8000")
     bp.add_argument("--concurrency", type=int, default=8)
     bp.add_argument("--requests", type=int, default=100)
+    bp.add_argument("--metrics-token", help="token for the server's meters (default: $SMRITI_METRICS_TOKEN)")
+    bp.add_argument("--metrics-user", help="demo mode: read the meters as this person (needs the audit grant)")
+    bp.add_argument("--json", help="also write the report to this file")
     bp.add_argument(
         "--no-cache", action="store_true", help="make every question unique so the answer cache cannot help"
     )
@@ -105,7 +147,16 @@ def main(argv: list[str] | None = None) -> int:
     qp.add_argument("--as", dest="user", required=True)
     qp.add_argument("--as-of", dest="as_of")
     ep = sub.add_parser("eval")
-    ep.add_argument("kind", nargs="?", default="gate", choices=["golden", "leakage", "redteam", "gate"])
+    ep.add_argument(
+        "kind", nargs="?", default="gate", choices=["golden", "leakage", "redteam", "gate", "hard", "compare", "build"]
+    )
+    ep.add_argument("configs", nargs="*", help="hard/compare: NAME or NAME:KEY=VALUE,KEY=VALUE (environment settings)")
+    ep.add_argument("--out", help="hard: keep the generated pack here; build: where to write the candidates")
+    ep.add_argument("--pack", help="hard/compare: score this tenant pack's golden set instead of the hard set")
+    ep.add_argument("--seed", type=int, default=7, help="hard/compare: seed of the generated corpus")
+    ep.add_argument("--json", help="hard/compare: also write the full result to this file")
+    ep.add_argument("--count", type=int, default=40, help="build: how many candidate questions to draft")
+    ep.add_argument("--as", dest="user", help="build: draft as this person (they must be able to read the documents)")
     sub.add_parser("audit-verify")
     vp = sub.add_parser("validate-pack")
     vp.add_argument("path")
@@ -175,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
             uvicorn.run(create_app(), host=args.host, port=args.port, log_level="info")
         return 0
 
+    if args.cmd == "worker" and args.healthcheck:
+        return 0 if worker_healthy() else 1
+
     if args.cmd == "worker":
         from .connectors import JobRunner
         from .watch import Scheduler
@@ -182,8 +236,10 @@ def main(argv: list[str] | None = None) -> int:
         plat = _platform(args)
         n = sum(len(t.pack.sources) for t in plat.tenants.values())
         print(f"worker: {n} pack sources on schedule; running ingestion jobs", flush=True)
-        JobRunner(plat.tenants, plat.box).start()
+        jobs = JobRunner(plat.tenants, plat.box)
+        jobs.start()
         sched = Scheduler(plat.tenants, plat.box)
+        _worker_heartbeat([jobs, threading.main_thread()])
         sched.run()  # blocks
         return 0
 
@@ -196,7 +252,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "bench":
         from .bench import run_bench
 
-        return run_bench(args.url, args.concurrency, args.requests, unique=args.no_cache)
+        return run_bench(
+            args.url,
+            args.concurrency,
+            args.requests,
+            unique=args.no_cache,
+            metrics_token=args.metrics_token,
+            metrics_user=args.metrics_user,
+            json_path=args.json,
+        )
 
     if args.cmd == "modelbench":
         return int(args.func(args))
@@ -229,6 +293,48 @@ def main(argv: list[str] | None = None) -> int:
                 f"  [{c['n']}] {c['title']} {c['ref_no'] or ''} {('clause ' + c['clause_id']) if c['clause_id'] else ''} ({c['status']})"
             )
         print(f"  faithfulness={r['verification'].get('faithfulness')} abstained={r['abstained']} route={r['route']}")
+    elif args.cmd == "eval" and args.kind in ("hard", "compare"):
+        from . import evals
+
+        specs = args.configs or ["default"]
+        if args.kind == "compare" and len(specs) != 2:
+            print("compare needs two configurations, for example: smriti eval compare base new:SMRITI_RRF_K=20")
+            return 2
+        runs = [evals.run_hard(evals.parse_config(s), out=args.out, seed=args.seed, pack=args.pack) for s in specs]
+        for r in runs:
+            print(evals.format_hard(r), end=chr(10) * 2)
+        result: dict[str, Any] = runs[0] if len(runs) == 1 else {"runs": runs}
+        if args.kind == "compare":
+            result["compare"] = evals.compare(runs[0], runs[1])
+            print(evals.format_compare(result["compare"]))
+        if args.json:
+            Path(args.json).write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        fails = [f"{r['config']}: {why}" for r in runs for why in evals.hard_gate(r)]
+        for why in fails:
+            print(f"FAIL {why}")
+        return 1 if fails else 0
+    elif args.cmd == "eval" and args.kind == "build":
+        from . import evals
+
+        if not args.user:
+            print("build needs --as USER: candidates are drafted only from documents that person may read")
+            return 2
+        t = _platform(args).tenant(None)
+        built = evals.build_candidates(t, args.user, count=args.count, seed=args.seed)
+        out = Path(args.out or "golden-candidates.yaml")
+        head = (
+            "# Candidate golden questions drafted by `smriti eval build`. Review every one: fix the wording,\n"
+            "# delete what is wrong or trivial, then move the cases you accept into the pack's evals/golden.yaml.\n"
+        )
+        out.write_text(
+            head + yaml.safe_dump({"cases": built["cases"]}, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        n = len(built["cases"])
+        print(
+            f"{n} candidates written to {out} (drafted by {built['drafted_by']}; "
+            f"{built['rejected_drafts']} drafts rejected; Smriti answers {built['passes_now']} of {n} correctly today)"
+        )
+        return 0
     elif args.cmd == "eval":
         from . import evals
 

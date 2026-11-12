@@ -214,3 +214,40 @@ What this says about a 6 GB card:
 
 Not tested yet: speculative decoding (draft model or n-gram), and 12 GB+
 cards. For those, see [deploy/bench/README.md](../deploy/bench/README.md).
+
+### The whole stack on the 6 GB profile
+
+Measured on 12 November 2026 with `./install.ps1 -Profile gpu-6gb` (llama.cpp,
+Qwen3-4B Q4_K_M, encoders on the CPU, Postgres and Qdrant) and
+`smriti bench --no-cache --requests 24 --metrics-user nadia`. Every question is
+unique, so the answer cache cannot help. VRAM in use: 4.4 GB.
+
+| Simultaneous users | Answers per second | p50 latency | p95 latency | Errors | Requests shed |
+|---|---|---|---|---|---|
+| 1 | 0.48 | 1.4 s | 6.9 s | 0 | 0 |
+| 4 | 0.97 | 2.7 s | 15.0 s | 0 | 0 |
+| 8 | 1.06 | 6.3 s | 16.8 s | 0 | 0 |
+
+Of 24 questions, 16 were written by the model, 6 by the extractive writer, 2
+were computed from table rows and 2 abstained. Model answers used about 1,540
+prompt tokens and 125 to 185 completion tokens.
+
+What this says:
+
+- Throughput stops rising after 4 users (0.97 to 1.06 answers per second), which
+  matches the knee of 4 measured on the model server alone. Above that, requests
+  queue and the median wait more than doubles.
+- The slow tail is the model: questions the extractive writer or the table
+  calculator can answer return in well under a second.
+
+Two things this run exposed, both still open:
+
+- **Prompts are about 50% larger than the setting.** `SMRITI_CONTEXT_TOKENS=1000`
+  produced 1,540-token prompts, because the budget is estimated from words and
+  this corpus runs at about 0.43 words per token. It fits the 3,072-token slots
+  of this profile, but the budget should be counted with the server's tokenizer.
+- **Token meters are per process.** With two API workers, `/api/metrics.json`
+  reports only the worker that answers the request, so the model-call and token
+  counts above are undercounts at 4 and 8 users (the `answered_by` counts come
+  from the answers themselves and are right).
+

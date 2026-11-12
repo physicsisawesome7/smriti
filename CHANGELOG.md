@@ -17,6 +17,20 @@
 - **deploy/bench/:** `get-gguf.sh` (pinned GGUF downloads), `llm-sweep.sh` (one llama.cpp configuration per run) and a README for benchmarking vLLM on 12 GB and larger cards.
 - **`modelbench chat` calibrates prompt size** against the server's own token count (the demo corpus is about 0.43 words per token, not 0.75) and reports the server's error message when a request fails.
 - **docs/offline-stack.md:** library choices per pipeline stage for a zero-internet install (adopt, trial, assess or avoid, with licences).
+- **The hard set (`smriti eval hard`):** a generated corpus of 268 synthetic documents in three generic domains and 190 questions in eight slices (exact, paraphrase, cross-language, multi-hop, table, superseded, unanswerable, restricted), reproducible from a seed. Unlike the 14-question golden set, configurations score differently on it. It fails on any leak, or if exact lookups, amendment chains or permissions drop below their floors.
+- **`smriti eval compare A B`:** two configurations (`NAME:KEY=VALUE,...`) on the same questions, paired, with a 95% bootstrap interval per slice for both the whole case and retrieval alone. `--pack` compares on a tenant's own golden set.
+- **`smriti eval build --as USER`:** drafts golden-set candidates from the documents that person may read, for a curator to review. With a model, answers must be copied from the passage; without one, fill-the-gap drafts are marked for rewording.
+- **Golden cases** may carry `slice`, `expect_any` (any one string, for answers in either language) and `expect_all_docs` (every expected document retrieved).
+- **docs/evaluation.md:** how to use them, and the baseline.
+
+### Fixed
+- **The installer never saw "ready".** Since 0.2.0 it waited on `/api/health?deep=1`, which needs sign-in, so every install timed out after 30 minutes although the stack was up. `/api/health?ready=1` now answers 200 or 503 with no detail and no sign-in, and both installers wait on it.
+- **Worker and sandbox always showed "unhealthy"** because they inherited the API's health check. The worker writes a heartbeat while its scheduler and job runner are alive (`smriti worker --healthcheck`); the sandbox is probed on its own port.
+- **`smriti bench` crashed** on servers that protect their meters. It now takes `--metrics-token` (or `SMRITI_METRICS_TOKEN`) or `--metrics-user`, reports latency without them, and can write `--json`.
+- **Installer status** (`--status` / `-Status`) asks the API from the host and says so when Docker's port forwarding is stale but Smriti is running.
+
+### Changed
+- **The verifier checks limits and scope.** "At least 21 days" is no longer supported by "within 21 days", and "all contractors" is not supported by "some contractors" (English and Hindi). "Not less than" and "not more than" are read as limits, not as negations, so they agree with "at least" and "at most". Each verified sentence reports `quantifier_ok`.
 
 ## 0.2.0: safe and measured (Gate 0, security and data integrity)
 

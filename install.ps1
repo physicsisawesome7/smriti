@@ -34,7 +34,21 @@ if ($LASTEXITCODE -ne 0) {
     if (-not $ok) { Die "Docker is not running. Start Docker Desktop and run this again." }
 }
 
-if ($Status) { docker compose ps; exit 0 }
+if ($Status) {
+    docker compose ps
+    $port = "8000"
+    if (Test-Path .env) { $p = ((Get-Content .env | Where-Object { $_ -match '^SMRITI_PORT=' }) -replace 'SMRITI_PORT=', ''); if ($p) { $port = $p } }
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 "http://127.0.0.1:$port/api/health"
+        Say "API answers on http://127.0.0.1:$port  $($r.Content)"
+    } catch {
+        $inside = 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:8000/api/health\",timeout=5)'
+        cmd /c "docker compose exec -T smriti-api python -c `"$inside`" >nul 2>&1"
+        if ($LASTEXITCODE -eq 0) { Die "Smriti is running, but port $port on this machine does not reach it. Docker's port forwarding is stale: run 'docker compose restart smriti-api' (or restart Docker Desktop)." }
+        Die "the API is not answering; see: docker compose logs --tail 50 smriti-api"
+    }
+    exit 0
+}
 if ($Stop) { docker compose stop; exit 0 }
 if ($Uninstall) {
     $a = Read-Host "Remove containers AND all data volumes (documents, index, model cache)? [y/N]"
@@ -127,7 +141,7 @@ if (-not $port) { $port = "8000" }
 Say "waiting for Smriti and the model servers (first start can take 10-30 min)..."
 for ($i = 1; $i -le 360; $i++) {
     try {
-        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$port/api/health?deep=1"
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$port/api/health?ready=1"
         if ($r.StatusCode -eq 200) {
             Say "ready: http://127.0.0.1:$port"
             Write-Host "  benchmark:  docker compose exec smriti-api smriti bench --url http://127.0.0.1:8000"

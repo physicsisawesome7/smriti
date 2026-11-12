@@ -539,6 +539,7 @@ def retrieval_combo(embed: dict[str, Any], rerank: dict[str, Any], pack: str | N
                 database_url=f"sqlite:///{(Path(tmp) / 'smriti.db').as_posix()}",
                 scheduler=False,
                 auth_mode="demo",
+                vector_backend="local",  # never the live vector store, whatever the environment says
             )
             plat = Platform(settings)
             t0 = time.perf_counter()

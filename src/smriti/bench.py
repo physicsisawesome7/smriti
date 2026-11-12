@@ -11,10 +11,13 @@ the price list for a deployment should be built on these numbers.
 
 from __future__ import annotations
 
+import json
+import os
 import random
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -45,13 +48,38 @@ def _pct(xs: list[float], p: float) -> float:
     return xs[min(len(xs) - 1, round(p / 100 * (len(xs) - 1)))]
 
 
-def run_bench(url: str, concurrency: int, requests: int, unique: bool = False) -> int:
-    client = httpx.Client(base_url=url.rstrip("/"), timeout=180, limits=httpx.Limits(max_connections=concurrency * 2))
+METERS = ("llm_calls", "prompt_tokens", "completion_tokens", "shed")
 
-    def metrics() -> dict[str, Any]:
-        return client.get("/api/metrics.json").json()
+
+def run_bench(
+    url: str,
+    concurrency: int,
+    requests: int,
+    unique: bool = False,
+    metrics_token: str | None = None,
+    metrics_user: str | None = None,
+    json_path: str | None = None,
+) -> int:
+    client = httpx.Client(base_url=url.rstrip("/"), timeout=180, limits=httpx.Limits(max_connections=concurrency * 2))
+    token = metrics_token or os.environ.get("SMRITI_METRICS_TOKEN", "")
+    auth = {"Authorization": f"Bearer {token}"} if token else {"X-Smriti-User": metrics_user} if metrics_user else {}
+
+    def metrics() -> dict[str, Any] | None:
+        """The server's token meters, or None when this caller may not read them."""
+        try:
+            r = client.get("/api/metrics.json", headers=auth)
+            d = r.json() if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            return None
+        return d if isinstance(d, dict) and all(k in d for k in METERS) else None
 
     before = metrics()
+    if before is None:
+        print(
+            "note: no access to /api/metrics.json, so token counts are left out. Set SMRITI_METRICS_TOKEN "
+            "(or --metrics-token), or pass --metrics-user with someone who has the audit grant.",
+            flush=True,
+        )
     lat: list[float] = []
     rows: list[dict[str, Any]] = []
     errors = 0
@@ -75,13 +103,10 @@ def run_bench(url: str, concurrency: int, requests: int, unique: bool = False) -
     with ThreadPoolExecutor(concurrency) as ex:
         list(ex.map(one, range(requests)))
     wall = time.perf_counter() - t0
-    after = metrics()
+    after = metrics() if before is not None else None
 
     n = len(rows)
-    llm_calls = after["llm_calls"] - before["llm_calls"]
-    prompt = after["prompt_tokens"] - before["prompt_tokens"]
-    completion = after["completion_tokens"] - before["completion_tokens"]
-    report = {
+    report: dict[str, Any] = {
         "requests": requests,
         "concurrency": concurrency,
         "ok": n,
@@ -97,13 +122,23 @@ def run_bench(url: str, concurrency: int, requests: int, unique: bool = False) -
         "cached": sum(r["cached"] for r in rows),
         "abstained": sum(bool(r["abstained"]) for r in rows),
         "answered_by": {m: sum(1 for r in rows if r["model"] == m) for m in sorted({str(r["model"]) for r in rows})},
-        "llm_calls": llm_calls,
-        "llm_share": round(llm_calls / n, 2) if n else 0,
-        "prompt_tokens_per_llm_call": round(prompt / llm_calls) if llm_calls else 0,
-        "completion_tokens_per_llm_call": round(completion / llm_calls) if llm_calls else 0,
-        "gpu_tokens_per_answer": round((prompt + completion) / n, 1) if n else 0,
-        "load_shed": after["shed"] - before["shed"],
     }
+    if before is not None and after is not None:
+        llm_calls = after["llm_calls"] - before["llm_calls"]
+        prompt = after["prompt_tokens"] - before["prompt_tokens"]
+        completion = after["completion_tokens"] - before["completion_tokens"]
+        report.update(
+            {
+                "llm_calls": llm_calls,
+                "llm_share": round(llm_calls / n, 2) if n else 0,
+                "prompt_tokens_per_llm_call": round(prompt / llm_calls) if llm_calls else 0,
+                "completion_tokens_per_llm_call": round(completion / llm_calls) if llm_calls else 0,
+                "gpu_tokens_per_answer": round((prompt + completion) / n, 1) if n else 0,
+                "load_shed": after["shed"] - before["shed"],
+            }
+        )
+    if json_path:
+        Path(json_path).write_text(json.dumps(report, indent=2), encoding="utf-8")
     width = max(len(k) for k in report)
     for k, v in report.items():
         print(f"{k:<{width}}  {v}")

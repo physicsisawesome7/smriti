@@ -76,6 +76,12 @@ services:
     command: ["smriti", "worker"]
     depends_on:
       smriti-api: {condition: service_healthy}
+    healthcheck:   # the image's check probes the API port, which the worker does not have
+      test: ["CMD", "smriti", "worker", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # Runs code that agents write. Only reachable from the API and worker over an
   # internal network with no route out; nothing of Smriti's data is mounted.
@@ -95,6 +101,12 @@ services:
     environment: {HOME: /tmp, TMPDIR: /tmp, SMRITI_SANDBOX_TOKEN: "${SMRITI_SANDBOX_TOKEN:-}"}
     depends_on:
       smriti-init: {condition: service_completed_successfully}
+    healthcheck:   # the sandbox listens on 8080, not the API's 8000
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   searxng:

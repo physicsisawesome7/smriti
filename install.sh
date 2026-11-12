@@ -31,7 +31,18 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is missing (doc
 docker info >/dev/null 2>&1 || die "Docker is not running. Start Docker (Desktop) and run this again."
 
 case "$ACTION" in
-  status) docker compose ps; curl -fsS "http://127.0.0.1:$(grep -E '^SMRITI_PORT=' .env | cut -d= -f2)/api/health?deep=1" && echo; exit 0 ;;
+  status)
+    docker compose ps
+    port=$(grep -E '^SMRITI_PORT=' .env 2>/dev/null | cut -d= -f2); port=${port:-8000}
+    inside='import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:8000/api/health",timeout=5).read().decode())'
+    if out=$(curl -fs -m 10 "http://127.0.0.1:${port}/api/health"); then
+      say "API answers on http://127.0.0.1:${port}  $out"
+    elif docker compose exec -T smriti-api python -c "$inside" >/dev/null 2>&1; then
+      die "Smriti is running, but port ${port} on this machine does not reach it. Docker's port forwarding is stale: run 'docker compose restart smriti-api' (or restart Docker Desktop)."
+    else
+      die "the API is not answering; see: docker compose logs --tail 50 smriti-api"
+    fi
+    exit 0 ;;
   stop) docker compose stop; exit 0 ;;
   uninstall)
     read -r -p "Remove containers AND all data volumes (documents, index, model cache)? [y/N] " a
@@ -112,7 +123,7 @@ docker compose up -d --build
 PORT=$(grep -E '^SMRITI_PORT=' .env | cut -d= -f2); PORT=${PORT:-8000}
 say "waiting for Smriti and the model servers to be ready (first start can take 10-30 min)…"
 for i in $(seq 1 360); do
-  if curl -fsS "http://127.0.0.1:${PORT}/api/health?deep=1" >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:${PORT}/api/health?ready=1" >/dev/null 2>&1; then
     say "ready: http://127.0.0.1:${PORT}"
     echo "  benchmark:  docker compose exec smriti-api smriti bench --url http://127.0.0.1:8000"
     echo "  logs:       docker compose logs -f llm smriti-api"
